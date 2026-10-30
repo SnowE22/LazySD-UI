@@ -817,6 +817,14 @@ class SDCppWorker:
         # Flash Attention for diffusion model
         cmd.append("--diffusion-fa")
 
+        # CPU offload for Text Encoder on GPUs with <= 12GB VRAM (e.g. RTX 3070 Ti 8GB)
+        gpu_vram = gpu_info.vram_mb if gpu_info else 8192
+        if gpu_vram <= 12288 or getattr(request, "offload_te_cpu", False):
+            cmd.extend(["--backend", "te=cpu"])
+        if gpu_vram <= 12288:
+            cmd.append("--vae-tiling")
+            cmd.extend(["--params-backend", "cpu"])
+
         # Sampling method & Noise / Eta
         noise_val = float(getattr(request, "noise", 0.0) or 0.0)
         ui_sampler = getattr(request, "sampler", None)
