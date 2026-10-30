@@ -708,9 +708,11 @@ const App = {
       select.appendChild(opt);
     }
 
-    // Auto-select first non-disabled model (or preserve existing selection)
+    // Auto-select saved model from localStorage or preserve existing selection
+    const savedModelId = localStorage.getItem("lazysd_selected_model");
+    const savedModel = savedModelId && compatible.find(m => m.id === savedModelId && !m.disabled);
     const existing = this.state.selectedModel && compatible.find(m => m.id === this.state.selectedModel && !m.disabled);
-    const firstActive = existing || compatible.find(m => !m.disabled) || compatible[0];
+    const firstActive = savedModel || existing || compatible.find(m => !m.disabled) || compatible[0];
     if (firstActive) {
       select.value = firstActive.id;
       this.state.selectedModel = firstActive.id;
@@ -1025,13 +1027,14 @@ const App = {
     }
 
     this.state.selectedModel = modelId;
+    localStorage.setItem("lazysd_selected_model", modelId);
 
     const select = document.getElementById("model-select");
     if (select) {
       select.value = modelId;
     }
 
-    if (this.state.currentTab !== "generate") {
+    if (this.state.currentTab !== "generate" && this.state.currentTab !== "inpaint") {
       this.switchTab("generate");
     }
 

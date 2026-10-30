@@ -121,6 +121,65 @@
       if (!canvas || st._inpaintEventsBound) return;
       st._inpaintEventsBound = true;
 
+      // Restore persisted inpaint prompts & parameters from localStorage
+      try {
+        const pPrompt = localStorage.getItem('lazysd_inpaint_prompt');
+        if (pPrompt !== null) {
+          const el = document.getElementById('inpaint-prompt');
+          if (el) el.value = pPrompt;
+        }
+        const pNeg = localStorage.getItem('lazysd_inpaint_neg_prompt');
+        if (pNeg !== null) {
+          const el = document.getElementById('inpaint-negative-prompt');
+          if (el) el.value = pNeg;
+        }
+        const pStr = localStorage.getItem('lazysd_inpaint_strength');
+        if (pStr !== null) {
+          const el = document.getElementById('inpaint-strength');
+          const valEl = document.getElementById('inpaint-strength-val');
+          if (el) el.value = pStr;
+          if (valEl) valEl.textContent = pStr;
+        }
+        const pBlur = localStorage.getItem('lazysd_inpaint_mask_blur');
+        if (pBlur !== null) {
+          const el = document.getElementById('inpaint-mask-blur');
+          const valEl = document.getElementById('inpaint-mask-blur-val');
+          if (el) el.value = pBlur;
+          if (valEl) valEl.textContent = pBlur + ' px';
+        }
+        const pArea = localStorage.getItem('lazysd_inpaint_area_mode');
+        if (pArea !== null) {
+          const el = document.getElementById('inpaint-area-mode');
+          if (el) el.value = pArea;
+        }
+        const pWin = localStorage.getItem('lazysd_inpaint_window_size');
+        if (pWin !== null) {
+          const el = document.getElementById('inpaint-window-size');
+          if (el) el.value = pWin;
+        }
+
+        // Attach auto-save listeners
+        ['inpaint-prompt', 'inpaint-negative-prompt', 'inpaint-strength', 'inpaint-mask-blur', 'inpaint-area-mode', 'inpaint-window-size'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) {
+            el.addEventListener('input', () => {
+              if (id === 'inpaint-prompt') localStorage.setItem('lazysd_inpaint_prompt', el.value);
+              if (id === 'inpaint-negative-prompt') localStorage.setItem('lazysd_inpaint_neg_prompt', el.value);
+              if (id === 'inpaint-strength') localStorage.setItem('lazysd_inpaint_strength', el.value);
+              if (id === 'inpaint-mask-blur') localStorage.setItem('lazysd_inpaint_mask_blur', el.value);
+              if (id === 'inpaint-area-mode') localStorage.setItem('lazysd_inpaint_area_mode', el.value);
+              if (id === 'inpaint-window-size') localStorage.setItem('lazysd_inpaint_window_size', el.value);
+            });
+            el.addEventListener('change', () => {
+              if (id === 'inpaint-area-mode') localStorage.setItem('lazysd_inpaint_area_mode', el.value);
+              if (id === 'inpaint-window-size') localStorage.setItem('lazysd_inpaint_window_size', el.value);
+            });
+          }
+        });
+      } catch (err) {
+        console.warn('[inpaint] Failed to load/save localStorage settings', err);
+      }
+
       canvas.style.pointerEvents = (st.tool === 'view') ? 'none' : 'auto';
 
       canvas.addEventListener('pointerdown', e => {
@@ -146,12 +205,16 @@
       });
 
       const stopDrawing = (e) => {
-        if (!st.isDrawing) return;
         st.isDrawing = false;
-        try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+        if (e && e.pointerId) {
+          try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+        }
       };
       canvas.addEventListener('pointerup', stopDrawing);
       canvas.addEventListener('pointercancel', stopDrawing);
+      canvas.addEventListener('lostpointercapture', stopDrawing);
+      window.addEventListener('pointerup', () => { st.isDrawing = false; });
+      window.addEventListener('blur', () => { st.isDrawing = false; });
 
       document.getElementById('inpaint-dropzone').addEventListener('dragover', e => {
         e.preventDefault();
@@ -241,6 +304,7 @@
     setInpaintTool(tool) {
       const st = app.state.inpaint;
       st.tool = tool;
+      st.isDrawing = false;
       ['view', 'brush', 'eraser'].forEach(t => {
         const btn = document.getElementById(`inpaint-tool-${t}`);
         if (btn) btn.classList.toggle('active', t === tool);
@@ -249,6 +313,11 @@
       if (canvas) {
         canvas.style.cursor = (tool === 'view') ? 'grab' : 'crosshair';
         canvas.style.pointerEvents = (tool === 'view') ? 'none' : 'auto';
+        if (tool !== 'view') {
+          canvas.style.display = 'block';
+          const chk = document.getElementById('inpaint-show-mask');
+          if (chk) chk.checked = true;
+        }
       }
     },
 
@@ -414,14 +483,23 @@
             if (status.status === 'complete') {
               clearInterval(pollInterval);
               if (overlay) overlay.style.display = 'none';
-              const outUrl = status.image_path.startsWith('/') ? status.image_path : '/' + status.image_path;
+              const filename = (status.image_path || "").split(/[\/\\]/).pop();
+              const outUrl = `/outputs/${encodeURIComponent(filename)}?t=${Date.now()}`;
               st.resultDataUrl = outUrl;
               const previewImg = document.getElementById('inpaint-preview-img');
               if (previewImg) previewImg.src = outUrl;
+              
+              // Clear mask so canvas is immediately ready for next stroke without disappearing!
               const canvas = getCanvas();
-              if (canvas) canvas.style.display = 'none';
+              if (canvas) {
+                const ctx = canvas.getContext('2d');
+                if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+                canvas.style.display = 'block';
+                canvas.style.pointerEvents = (st.tool === 'view') ? 'none' : 'auto';
+              }
               const showMaskChk = document.getElementById('inpaint-show-mask');
-              if (showMaskChk) showMaskChk.checked = false;
+              if (showMaskChk) showMaskChk.checked = true;
+
               showToast('success', 'Inpaint успешно сгенерирован! ✓');
               if (app.loadHistory) app.loadHistory();
             } else if (status.status === 'error') {
