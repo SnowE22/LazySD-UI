@@ -48,12 +48,15 @@
     ctx.save();
     if (tool === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
+      ctx.fillStyle = 'rgba(0,0,0,1)';
     } else {
       ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = '#ffffff';
-      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = 'rgba(239, 68, 68, 1.0)';
+      ctx.fillStyle = 'rgba(239, 68, 68, 1.0)';
     }
-    ctx.lineWidth = brushSize * scale;
+    const strokeWidth = Math.max(1, brushSize * scale);
+    ctx.lineWidth = strokeWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
@@ -61,7 +64,7 @@
     ctx.lineTo(x2, y2);
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(x2, y2, (brushSize * scale) / 2, 0, Math.PI * 2);
+    ctx.arc(x2, y2, strokeWidth / 2, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
@@ -74,9 +77,13 @@
       if (!canvas || st._inpaintEventsBound) return;
       st._inpaintEventsBound = true;
 
+      canvas.style.pointerEvents = (st.tool === 'view') ? 'none' : 'auto';
+
       canvas.addEventListener('pointerdown', e => {
-        if (st.tool === 'view') return;
+        if (st.tool === 'view' || e.button !== 0) return;
         e.preventDefault();
+        e.stopPropagation();
+        try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
         const p = getCoords(e, canvas);
         st.lastX = p.x;
         st.lastY = p.y;
@@ -87,23 +94,20 @@
       canvas.addEventListener('pointermove', e => {
         if (!st.isDrawing) return;
         e.preventDefault();
+        e.stopPropagation();
         const p = getCoords(e, canvas);
         drawStroke(st.lastX, st.lastY, p.x, p.y, st.tool, st.brushSize, p.scale);
         st.lastX = p.x;
         st.lastY = p.y;
       });
 
-      canvas.addEventListener('pointerup', () => {
+      const stopDrawing = (e) => {
+        if (!st.isDrawing) return;
         st.isDrawing = false;
-      });
-
-      canvas.addEventListener('pointerleave', () => {
-        st.isDrawing = false;
-      });
-
-      canvas.addEventListener('pointercancel', () => {
-        st.isDrawing = false;
-      });
+        try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+      };
+      canvas.addEventListener('pointerup', stopDrawing);
+      canvas.addEventListener('pointercancel', stopDrawing);
 
       document.getElementById('inpaint-dropzone').addEventListener('dragover', e => {
         e.preventDefault();
@@ -198,7 +202,10 @@
         if (btn) btn.classList.toggle('active', t === tool);
       });
       const canvas = getCanvas();
-      if (canvas) canvas.style.cursor = (tool === 'view') ? 'grab' : 'crosshair';
+      if (canvas) {
+        canvas.style.cursor = (tool === 'view') ? 'grab' : 'crosshair';
+        canvas.style.pointerEvents = (tool === 'view') ? 'none' : 'auto';
+      }
     },
 
     setInpaintBrushSize(size) {
@@ -224,10 +231,10 @@
       const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const d = imgData.data;
       for (let i = 0; i < d.length; i += 4) {
-        if (d[i + 3] > 128) {
+        if (d[i + 3] > 32) {
           d[i] = 0; d[i+1] = 0; d[i+2] = 0; d[i+3] = 0;
         } else {
-          d[i] = 255; d[i+1] = 255; d[i+2] = 255; d[i+3] = 255;
+          d[i] = 239; d[i+1] = 68; d[i+2] = 68; d[i+3] = 255;
         }
       }
       ctx.putImageData(imgData, 0, 0);
@@ -266,6 +273,7 @@
           if (canvas) {
             canvas.width = previewImg.naturalWidth;
             canvas.height = previewImg.naturalHeight;
+            canvas.style.pointerEvents = (st.tool === 'view') ? 'none' : 'auto';
             const ctx = canvas.getContext('2d');
             if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
           }

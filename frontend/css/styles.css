@@ -4220,6 +4220,11 @@ body:not(.role-guest) #guest-mode-banner {
 #inpaint-mask-canvas.inpaint-sharp {
   image-rendering: pixelated !important;
 }
+#inpaint-mask-canvas {
+  pointer-events: auto !important;
+  touch-action: none !important;
+  opacity: 0.65;
+}
 .ht-roi-img {
   position: absolute;
   z-index: 3;
