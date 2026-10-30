@@ -306,6 +306,36 @@ def test_workers_wire_the_mask_into_the_engine():
     assert "mask_strength_value" in sd_cpp_src
 
 
+def test_generate_backend_filter_does_not_empty_engine_cards():
+    """/api/generate used to filter transformers by the request backend
+    (default "lighting"), which is a QuantFunc-only concept.  Nunchaku /
+    OrbitQuant / SD.CPP cards expose the ENGINE name as the transformer
+    backend, so the filter emptied the list and generation failed with
+    "No compatible transformer found for backend=lighting".
+    """
+    from backend.registry.loader import get_registry
+
+    registry = get_registry()
+    for model_id in (
+        "flux_2_klein_4b_nunchaku",
+        "flux_2_klein_4b_orbitquant",
+        "flux_2_klein_9b_nunchaku",
+        "flux_2_klein_9b_kv_nunchaku",
+        "flux_2_klein_9b_orbitquant",
+        "flux_2_klein_base_9b_gguf",
+        "flux_3_image_klein_gguf",
+        "flux_schnell_gguf",
+    ):
+        spec = registry.get(model_id)
+        assert spec is not None, model_id
+        assert spec.get_transformers_for_tier(86, backend="lighting") == [], model_id
+        assert spec.get_transformers_for_tier(86, backend=None), model_id
+
+    # QuantFunc cards keep the lighting/svdq filtering behaviour.
+    qwen = registry.get("qwen_image_edit")
+    assert qwen.get_transformers_for_tier(86, backend="lighting")
+
+
 def test_custom_model_card_can_declare_mask_support():
     """The card editor must be able to flip the mask capability of a model."""
     from backend.custom_models import _apply_card_updates

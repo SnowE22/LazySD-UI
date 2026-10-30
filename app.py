@@ -8836,7 +8836,13 @@ def create_app() -> FastAPI:
 
 
 
-        transformers_for_gpu = model.get_transformers_for_tier(STATE.gpu_info.sm, backend=backend)
+        # `backend` (lighting/svdq) is a QuantFunc-engine concept. Nunchaku,
+        # OrbitQuant, SD.CPP and SDNQ cards expose the ENGINE name as the
+        # transformer backend, so the request backend must not filter them out
+        # (the Inpaint studio sends no backend/variant_id and would otherwise
+        # fail with "No compatible transformer found for backend=lighting").
+        backend_filter = backend if model_engine == "quantfunc" else None
+        transformers_for_gpu = model.get_transformers_for_tier(STATE.gpu_info.sm, backend=backend_filter)
 
 
 
