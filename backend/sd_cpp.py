@@ -712,10 +712,29 @@ class SDCppWorker:
                     if cand_cn.exists():
                         cn_path = cand_cn
 
+                crop_ctx = None
                 mask_path_obj = Path(request.mask_image_path) if getattr(request, "mask_image_path", None) else None
                 if mask_path_obj and not mask_path_obj.is_absolute():
                     mask_path_obj = settings.output_dir / mask_path_obj
                 has_mask = mask_path_obj and mask_path_obj.exists()
+
+                if has_mask and ref_path and ref_path.exists():
+                    inpaint_mode = getattr(request, "inpaint_mode", "masked_only") or "masked_only"
+                    crop_win = int(getattr(request, "crop_window_size", 768) or 768)
+                    if inpaint_mode == "masked_only" or max(width, height) > 1024:
+                        from .inpaint_stitch import prepare_inpaint_crop
+                        uploads_dir = settings.output_dir / "uploads"
+                        crop_ctx = prepare_inpaint_crop(
+                            orig_image_path=ref_path,
+                            mask_image_path=mask_path_obj,
+                            uploads_dir=uploads_dir,
+                            target_size=crop_win,
+                        )
+                        if crop_ctx:
+                            ref_path = crop_ctx.crop_img_path
+                            mask_path_obj = crop_ctx.crop_mask_path
+                            width = crop_ctx.w_out
+                            height = crop_ctx.h_out
 
                 if has_mask:
                     # Inpaint mode: pass -i, --mask, --strength and optional mask_blur
@@ -978,6 +997,19 @@ class SDCppWorker:
                 f"SD.CPP finished but output file not found: {output_path}\n"
                 f"--- Engine output (last 20 lines) ---\n{tail}"
             )
+
+        # Seamlessly stitch inpaint crop back into master full-resolution image
+        if 'crop_ctx' in locals() and crop_ctx:
+            try:
+                from .inpaint_stitch import stitch_inpaint_result
+                stitch_inpaint_result(
+                    crop_ctx=crop_ctx,
+                    generated_image_path=output_path,
+                    mask_blur=int(getattr(request, "mask_blur", 4) or 4),
+                )
+                width, height = crop_ctx.orig_size
+            except Exception as stitch_err:
+                logger.warning(f"[sd_cpp] Failed to stitch inpaint crop: {stitch_err}")
 
         elapsed = time.time() - start_time
 

@@ -374,6 +374,9 @@
           ? app.state.activeLoras.map(l => ({ name: l.name, strength: parseFloat(l.strength || 1.0) }))
           : (app.state.loras || []);
 
+        const inpaint_mode = document.getElementById('inpaint-area-mode')?.value || 'masked_only';
+        const crop_window_size = parseInt(document.getElementById('inpaint-window-size')?.value, 10) || 768;
+
         const res = await apiPost('/api/generate', {
           mode: 'inpaint',
           model_id: model,
@@ -386,6 +389,8 @@
           mask_image: maskDataUrl,
           mask_blur: mask_blur,
           invert_mask: st.invertMask,
+          inpaint_mode: inpaint_mode,
+          crop_window_size: crop_window_size,
           width: canvas ? canvas.width : 1024,
           height: canvas ? canvas.height : 1024,
           steps,

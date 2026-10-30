@@ -4405,6 +4405,21 @@
             <input type="range" id="inpaint-mask-blur" min="0" max="64" step="1" value="4" oninput="document.getElementById('inpaint-mask-blur-val').textContent = this.value + ' px'" style="flex: 1;">
           </div>
         </div>
+        <div class="control-group" style="width: 100%; margin-top: 6px;">
+          <label data-i18n="inpaint.area_mode">Область обработки (Inpaint Area)</label>
+          <select id="inpaint-area-mode" class="studio-select" style="width: 100%;">
+            <option value="masked_only" selected>🎯 Только маска (Crop & Stitch, 8GB Safe)</option>
+            <option value="whole_image">🖼️ Всё изображение (Whole Image)</option>
+          </select>
+        </div>
+        <div class="control-group" style="width: 100%; margin-top: 6px;" id="inpaint-window-size-group">
+          <label data-i18n="inpaint.window_size">Размер окна (Crop Window)</label>
+          <select id="inpaint-window-size" class="studio-select" style="width: 100%;">
+            <option value="512">512 × 512 px (Ультра-быстро, минимум VRAM)</option>
+            <option value="768" selected>768 × 768 px (Рекомендуется для RTX 3070 Ti)</option>
+            <option value="1024">1024 × 1024 px (Максимальная детализация)</option>
+          </select>
+        </div>
       </div>
     </details>
 

@@ -8486,6 +8486,8 @@ def create_app() -> FastAPI:
             raw_mask_image = body.get("mask_image")
             mask_blur_val = int(body.get("mask_blur", 4))
             invert_mask_flag = bool(body.get("invert_mask", False))
+            inpaint_mode = str(body.get('inpaint_mode', 'masked_only'))
+            crop_window_size = int(body.get('crop_window_size', 768))
 
 
 
@@ -9074,6 +9076,8 @@ def create_app() -> FastAPI:
 
 
             mask_blur=mask_blur_val,
+            inpaint_mode=inpaint_mode,
+            crop_window_size=crop_window_size,
 
 
 

@@ -86,6 +86,8 @@ class GenerateRequest:
     init_image_strength: float = 0.7
     mask_image_path: Optional[Path] = None  # For inpainting
     mask_blur: int = 4
+    inpaint_mode: str = 'masked_only'  # 'masked_only' | 'whole_image'
+    crop_window_size: int = 768
     lora_paths: list[Path] = field(default_factory=list)
     lora_strengths: list[float] = field(default_factory=list)
     output_filename: Optional[str] = None
