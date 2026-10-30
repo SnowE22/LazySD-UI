@@ -150,13 +150,11 @@
 
         </button>
 
-        <button class="nav-item" data-tab="inpaint" disabled>
+        <button class="nav-item" data-tab="inpaint">
 
           <span class="nav-icon">🎨</span>
 
           <span class="nav-label" data-i18n="nav.inpaint">Inpaint</span>
-
-          <span class="badge">soon</span>
 
         </button>
 
@@ -246,6 +244,8 @@
 
           <div class="preview-area">
 
+            <button type="button" class="mask-fab" id="gen-mask-fab" onclick="App.toggleGenMask()" title="Редактирование по маске" data-i18n-title="generate.mask.title">🎭</button>
+
             <div class="preview-placeholder" id="preview-placeholder">
 
               <div class="placeholder-icon">🖼</div>
@@ -284,6 +284,10 @@
 
               </div>
 
+              <!-- Mask overlay (Generate) — lives in image coordinates -->
+
+              <canvas id="gen-mask-canvas" class="mask-overlay-canvas" style="display: none;"></canvas>
+
               <div class="preview-toolbar">
 
                 <button class="preview-tool-btn" id="btn-compare-toggle" title="Шторка для сравнения с предыдущим результатом или референсом" onclick="App.toggleCompare()">↔ Сравнить</button>
@@ -298,7 +302,81 @@
 
                 <button class="preview-tool-btn" id="btn-open-output-dir" title="Открыть папку со скачанным / сгенерированным в проводнике Windows" data-i18n-title="preview.open_folder" onclick="openOutputDir()">📂</button>
 
+                <button class="preview-tool-btn" id="gen-mask-toggle" title="Редактирование по маске" data-i18n-title="generate.mask.title" onclick="App.toggleGenMask()">🎭</button>
+
               </div>
+
+            </div>
+
+            <!-- Mask panel (Generate) -->
+
+            <div class="mask-panel" id="gen-mask-panel" style="display: none;">
+
+              <div class="mask-panel-head">
+
+                <span class="mask-panel-title">🎭 <span data-i18n="generate.mask.title">Маска</span></span>
+
+                <button type="button" class="mask-panel-close" onclick="App.toggleGenMask()" title="Выйти из режима маски">✕</button>
+
+              </div>
+
+              <div class="mask-panel-hint" id="gen-mask-hint" style="display: none;">
+
+                <span data-i18n="generate.mask.hint_load">Загрузите изображение, чтобы рисовать маску</span>
+
+                <div class="mask-panel-source-actions">
+
+                  <button type="button" class="mask-mini-btn" onclick="App.openGalleryPicker('generate')" data-i18n="generate.mask.from_gallery">Из галереи</button>
+
+                  <button type="button" class="mask-mini-btn" onclick="document.getElementById('gen-mask-file-input').click()" data-i18n="generate.mask.upload">Загрузить</button>
+
+                  <button type="button" class="mask-mini-btn" onclick="App.useCanvasImageForMask()" data-i18n="generate.mask.from_canvas">С холста</button>
+
+                </div>
+
+              </div>
+
+              <div class="mask-panel-source">
+
+                <span class="mask-panel-label" data-i18n="generate.mask.source">Источник</span>
+
+                <span class="mask-panel-source-name" id="gen-mask-source-name">—</span>
+
+              </div>
+
+              <div class="mask-panel-tools">
+
+                <button type="button" class="mask-tool-btn active" id="gen-mask-tool-brush" title="Кисть" data-i18n-title="generate.mask.brush">🖌</button>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-tool-eraser" title="Ластик" data-i18n-title="generate.mask.eraser">🧽</button>
+
+                <span class="mask-tool-sep"></span>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-undo" onclick="App.undoGenMask()" title="Отменить" data-i18n-title="generate.mask.undo">↶</button>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-redo" onclick="App.redoGenMask()" title="Повторить" data-i18n-title="generate.mask.redo">↷</button>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-clear" onclick="App.clearGenMask()" title="Очистить маску" data-i18n-title="generate.mask.clear">🗑</button>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-invert" onclick="App.invertGenMask()" title="Инвертировать маску" data-i18n-title="generate.mask.invert">⇅</button>
+
+              </div>
+
+              <div class="mask-panel-sliders">
+
+                <label><span data-i18n="generate.mask.size">Размер</span> <span id="gen-mask-size-val">64</span></label>
+
+                <input type="range" id="gen-mask-size" min="4" max="400" step="1" value="64" oninput="App.setGenMaskBrushSize(this.value)">
+
+                <label><span data-i18n="generate.mask.softness">Мягкость</span> <span id="gen-mask-softness-val">50%</span></label>
+
+                <input type="range" id="gen-mask-softness" min="0" max="1" step="0.05" value="0.5" oninput="App.setGenMaskSoftness(this.value)">
+
+              </div>
+
+              <div class="mask-panel-status" id="gen-mask-status"></div>
+
+              <input type="file" id="gen-mask-file-input" accept="image/png,image/jpeg,image/webp" style="display: none;">
 
             </div>
 
@@ -1069,6 +1147,18 @@
 
                 </button>
 
+                <div style="margin-top: 10px;">
+
+                  <button type="button" class="history-action-btn" id="inspector-gen-mask-btn" onclick="App.toggleGenMask()" style="height: 32px; font-size: 11.5px; width: 100%;">
+
+                    <span data-i18n="generate.mask.title">🎭 Маска</span>
+
+                  </button>
+
+                  <div class="inspector-hint" id="inspector-gen-mask-hint" data-i18n="generate.mask.hint_load">Загрузите изображение, чтобы рисовать маску</div>
+
+                </div>
+
               </div>
 
             </details>
@@ -1258,6 +1348,184 @@
               </div>
 
             </details>
+
+          </div>
+
+        </aside>
+
+      </section>
+
+      <!-- ===== Tab: Inpaint (layered workspace) ===== -->
+
+      <section class="tab-panel inpaint-workspace" id="tab-inpaint" style="display: none;">
+
+        <div class="inpaint-canvas-area" id="inpaint-canvas-area">
+
+          <div class="inpaint-canvas-wrap" id="inpaint-canvas-wrap">
+
+            <canvas id="inpaint-composite" width="1024" height="1024"></canvas>
+
+            <div class="inpaint-mask-stack" id="inpaint-mask-stack"></div>
+
+          </div>
+
+          <div class="inpaint-brush-cursor" id="inpaint-brush-cursor" style="display: none;"></div>
+
+          <div class="viewport-zoom-hud" id="inpaint-zoom-hud">
+
+            <button type="button" class="zoom-hud-btn" onclick="App.stepViewportZoom('inpaint', -1)" title="Отдалить">−</button>
+
+            <span class="zoom-hud-label" id="inpaint-zoom-label" onclick="App.resetViewportZoom('inpaint')" title="Нажмите для сброса масштаба (100%)">🔍 100%</span>
+
+            <button type="button" class="zoom-hud-btn" onclick="App.stepViewportZoom('inpaint', 1)" title="Приблизить">+</button>
+
+            <button type="button" class="zoom-hud-reset" onclick="App.resetViewportZoom('inpaint')" title="Вписать в окно">⤢</button>
+
+          </div>
+
+          <div class="inpaint-empty-hint" id="inpaint-empty-hint">
+
+            <div class="placeholder-icon">🖼</div>
+
+            <div class="placeholder-text" data-i18n="inpaint.hint.load_image">Загрузите изображение для Inpaint</div>
+
+            <div class="inpaint-empty-actions">
+
+              <button type="button" class="mask-mini-btn" onclick="App.openGalleryPicker('inpaint')" data-i18n="generate.mask.from_gallery">Из галереи</button>
+
+              <button type="button" class="mask-mini-btn" onclick="document.getElementById('inpaint-file-input').click()" data-i18n="generate.mask.upload">Загрузить</button>
+
+              <button type="button" class="mask-mini-btn" onclick="App.useCanvasImageInInpaint()" data-i18n="generate.mask.from_canvas">С холста</button>
+
+            </div>
+
+            <input type="file" id="inpaint-file-input" accept="image/png,image/jpeg,image/webp" style="display: none;">
+
+          </div>
+
+        </div>
+
+        <aside class="inpaint-inspector">
+
+          <div class="inpaint-inspector-head">
+
+            <span class="inpaint-title">🎨 <span data-i18n="nav.inpaint">Inpaint</span></span>
+
+            <span class="inpaint-status" id="inpaint-status"></span>
+
+          </div>
+
+          <div class="inpaint-prompt-block">
+
+            <textarea id="inpaint-prompt" rows="3" data-i18n-placeholder="inpaint.prompt_placeholder" placeholder="Что изменить внутри маски?"></textarea>
+
+            <div class="inpaint-params">
+
+              <select id="inpaint-model-select" title="Модель" onchange="App.updateInpaintModelWarning()"></select>
+
+              <input type="number" id="inpaint-steps" value="4" min="1" max="150" title="Steps">
+
+              <input type="number" id="inpaint-cfg" value="1.0" step="0.1" min="0" max="30" title="CFG">
+
+              <input type="text" id="inpaint-seed" placeholder="seed" title="Seed">
+
+              <select id="inpaint-sampler" title="Sampler">
+
+                <option value="euler">euler</option>
+
+                <option value="dpm++2m">dpm++2m</option>
+
+                <option value="heun">heun</option>
+
+                <option value="unipc">unipc</option>
+
+              </select>
+
+            </div>
+
+            <div class="inpaint-model-warning" id="inpaint-model-warning" style="display: none;"></div>
+
+            <button type="button" class="inpaint-generate-btn" id="inpaint-generate-btn" onclick="App.generateInpaint()">
+
+              <span data-i18n="inpaint.generate">Сгенерировать в маске</span>
+
+            </button>
+
+            <div class="inpaint-progress" id="inpaint-progress" style="display: none;"></div>
+
+          </div>
+
+          <div class="inpaint-tools-block">
+
+            <div class="mask-panel-tools">
+
+              <button type="button" class="mask-tool-btn active" id="inpaint-tool-brush" title="Кисть" data-i18n-title="generate.mask.brush" onclick="App.setInpaintTool('brush')">🖌</button>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-tool-eraser" title="Ластик" data-i18n-title="generate.mask.eraser" onclick="App.setInpaintTool('eraser')">🧽</button>
+
+              <span class="mask-tool-sep"></span>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-undo" onclick="App.undoInpaint()" title="Отменить" data-i18n-title="generate.mask.undo">↶</button>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-redo" onclick="App.redoInpaint()" title="Повторить" data-i18n-title="generate.mask.redo">↷</button>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-clear" onclick="App.clearInpaintMask()" title="Очистить маску" data-i18n-title="generate.mask.clear">🗑</button>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-invert" onclick="App.invertInpaintMask()" title="Инвертировать маску" data-i18n-title="generate.mask.invert">⇅</button>
+
+            </div>
+
+            <div class="mask-panel-sliders">
+
+              <label><span data-i18n="generate.mask.size">Размер</span> <span id="inpaint-brush-size-val">64</span></label>
+
+              <input type="range" id="inpaint-brush-size" min="4" max="400" step="1" value="64" oninput="App.setInpaintBrushSize(this.value)">
+
+              <label><span data-i18n="generate.mask.softness">Мягкость</span> <span id="inpaint-softness-val">50%</span></label>
+
+              <input type="range" id="inpaint-softness" min="0" max="1" step="0.05" value="0.5" oninput="App.setInpaintSoftness(this.value)">
+
+            </div>
+
+          </div>
+
+          <div class="inpaint-layers-block">
+
+            <div class="inpaint-layers-head">
+
+              <span data-i18n="inpaint.layers.title">Слои</span>
+
+              <div class="inpaint-layers-actions">
+
+                <button type="button" class="mask-tool-btn" onclick="App.addInpaintMaskLayer()" title="Добавить маску" data-i18n-title="inpaint.layers.add_mask">🎭+</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.addInpaintResultLayer()" title="Добавить результат" data-i18n-title="inpaint.layers.add_result">✨+</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.moveInpaintLayer(App.getInpaintState().activeLayerId, 'up')" title="Выше" data-i18n-title="inpaint.layers.up">↑</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.moveInpaintLayer(App.getInpaintState().activeLayerId, 'down')" title="Ниже" data-i18n-title="inpaint.layers.down">↓</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.duplicateInpaintLayer(App.getInpaintState().activeLayerId)" title="Дублировать" data-i18n-title="inpaint.layers.duplicate">⧉</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.renameInpaintLayer(App.getInpaintState().activeLayerId)" title="Переименовать" data-i18n-title="inpaint.layers.rename">✎</button>
+
+                <button type="button" class="mask-tool-btn" id="inpaint-layer-delete" onclick="App.removeInpaintLayer(App.getInpaintState().activeLayerId)" title="Удалить" data-i18n-title="inpaint.layers.delete">🗑</button>
+
+              </div>
+
+            </div>
+
+            <div class="inpaint-layers-list" id="inpaint-layers-list"></div>
+
+            <div class="inpaint-layer-opacity-row">
+
+              <label data-i18n="inpaint.layers.opacity">Непрозрачность</label>
+
+              <input type="range" id="inpaint-layer-opacity" min="0" max="1" step="0.01" value="1" oninput="App.setInpaintLayerOpacity(App.getInpaintState().activeLayerId, this.value)">
+
+              <span id="inpaint-layer-opacity-num">1.00</span>
+
+            </div>
 
           </div>
 
@@ -4223,7 +4491,7 @@
 
   <script src="/js/dropzone.js?v=20261022_01"></script>
 
-  <script src="/js/app.js?v=20261030_01"></script>
+  <script src="/js/app.js?v=20261030_06"></script>
 
   <script>
 

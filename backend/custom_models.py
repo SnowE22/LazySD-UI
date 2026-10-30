@@ -1057,6 +1057,9 @@ def _apply_card_updates(manifest: dict[str, Any], updates: dict[str, Any]) -> di
             raise ValueError(f"Неизвестный pipeline: {pipeline}")
         manifest["pipeline"] = pipeline
 
+    if "supports_mask" in updates:
+        manifest["supports_mask"] = bool(updates.get("supports_mask"))
+
     if "engine" in updates:
         engine = str(updates.get("engine") or "").strip().lower()
         if engine not in CARD_ENGINES:

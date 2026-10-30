@@ -1,0 +1,285 @@
+"""Mask (inpaint) primitives shared by the Generate quick-mask and the Inpaint studio.
+
+MASK SEMANTICS (single source of truth for the whole project)
+-------------------------------------------------------------
+    white  (1.0) = the region that MUST be regenerated (edited)
+    black  (0.0) = the region that MUST stay exactly as in the original
+    grey         = soft transition (alpha blend between the two)
+
+The browser paints white strokes on a transparent RGBA canvas, so the exported
+PNG has "alpha == coverage" semantics.  When decoding we therefore combine the
+luminance and the alpha channel (``max(lum, alpha)``) — ``Image.convert("L")``
+alone would silently drop the alpha channel and report an empty mask.
+
+GUARANTEE
+---------
+Whatever the engine does, the final image is assembled on the backend:
+
+    result = generated * mask + original * (1 - mask)
+
+Pixels outside the mask are therefore bit-identical to the original image
+(the mask is exactly 0 there), which is what the specification demands:
+the guarantee must come from compositing, not from asking the model nicely.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import io
+import os
+from pathlib import Path
+from typing import Optional, Tuple, Union
+
+import numpy as np
+from PIL import Image
+
+# Maximum size of a decoded mask payload (25 MB, same limit as /api/upload).
+MAX_MASK_BYTES = 25 * 1024 * 1024
+
+# Maximum accepted mask resolution (matches validate_resolution upper bound).
+MAX_MASK_DIMENSION = 4096
+
+MaskSource = Union[str, Path, bytes, bytearray, Image.Image, np.ndarray, None]
+
+
+class MaskError(ValueError):
+    """Raised when a mask payload cannot be decoded."""
+
+
+# ---------- Engine capability table ----------
+# Only engines that expose a *documented* inpaint mask argument are enabled.
+#
+#   quantfunc : --mask-image PATH
+#               "Inpaint mask (PNG/JPG; alpha or grayscale; white=inpaint,
+#                black=preserve)"  -> polarity confirmed by the engine --help.
+#   sd_cpp    : --mask PATH exists, but the engine help does not document which
+#               pole means "edit" and the upstream source could not be verified,
+#               so passing a mask there risks inverting the edited region.
+#               Kept disabled until the polarity is confirmed.
+ENGINE_MASK_PARAMS: dict[str, dict] = {
+    "quantfunc": {"arg": "--mask-image", "white_is_edit": True, "supports": True},
+    "sd_cpp": {"arg": "--mask", "white_is_edit": None, "supports": False},
+}
+
+
+def engine_mask_support(engine: Optional[str]) -> bool:
+    """True when the given engine can consume an inpaint mask."""
+    if not engine:
+        return False
+    params = ENGINE_MASK_PARAMS.get(str(engine))
+    return bool(params and params.get("supports"))
+
+
+def engine_mask_arg(engine: Optional[str]) -> Optional[str]:
+    """CLI flag used to pass a mask to the given engine (None if unsupported)."""
+    if not engine:
+        return None
+    params = ENGINE_MASK_PARAMS.get(str(engine))
+    if not params or not params.get("supports"):
+        return None
+    return str(params.get("arg") or "")
+
+
+def _decode_data_url(data_url: str) -> bytes:
+    """Extract the raw bytes of a ``data:image/...;base64,`` URL."""
+    if not isinstance(data_url, str):
+        raise MaskError("Mask must be a base64 data URL")
+    header, separator, payload = data_url.partition(",")
+    if (
+        not separator
+        or header not in {
+            "data:image/png;base64",
+            "data:image/jpeg;base64",
+            "data:image/webp;base64",
+        }
+        or not payload
+    ):
+        raise MaskError("Mask must be a PNG, JPEG, or WebP base64 data URL")
+    if len(payload) > MAX_MASK_BYTES * 4 // 3 + 8:
+        raise MaskError("Mask payload exceeds the size limit")
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise MaskError(f"Mask payload is not valid base64: {exc}") from exc
+    if len(raw) > MAX_MASK_BYTES:
+        raise MaskError(
+            f"Mask payload too large ({len(raw)} bytes, limit {MAX_MASK_BYTES})"
+        )
+    return raw
+
+
+def _open_mask_image(mask_source: MaskSource) -> Image.Image:
+    """Open any supported mask source into a PIL image (never closes the source)."""
+    if mask_source is None:
+        raise MaskError("Mask source is empty")
+
+    if isinstance(mask_source, np.ndarray):
+        arr = mask_source
+        if arr.ndim == 2:
+            arr = np.stack([arr] * 3, axis=-1)
+        if arr.ndim != 3 or arr.shape[2] not in (3, 4):
+            raise MaskError(f"Unsupported mask array shape: {arr.shape}")
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr * 255.0 if arr.max() <= 1.0 else arr, 0, 255).astype(np.uint8)
+        if arr.shape[2] == 3:
+            arr = np.concatenate(
+                [arr, np.full(arr.shape[:2] + (1,), 255, dtype=np.uint8)], axis=2
+            )
+        return Image.fromarray(arr, "RGBA")
+
+    if isinstance(mask_source, Image.Image):
+        return mask_source.copy()
+
+    if isinstance(mask_source, (bytes, bytearray)):
+        raw = bytes(mask_source)
+        if len(raw) > MAX_MASK_BYTES:
+            raise MaskError("Mask payload too large")
+        try:
+            return Image.open(io.BytesIO(raw))
+        except Exception as exc:  # noqa: BLE001 - surfaced as a user-facing error
+            raise MaskError(f"Cannot read mask image: {exc}") from exc
+
+    if isinstance(mask_source, (str, Path)):
+        text = str(mask_source)
+        if text.startswith("data:image"):
+            raw = _decode_data_url(text)
+            try:
+                return Image.open(io.BytesIO(raw))
+            except Exception as exc:  # noqa: BLE001
+                raise MaskError(f"Cannot read mask image: {exc}") from exc
+        path = Path(text)
+        if not path.is_file():
+            raise MaskError(f"Mask file not found: {path}")
+        if path.stat().st_size > MAX_MASK_BYTES:
+            raise MaskError("Mask file too large")
+        try:
+            return Image.open(path)
+        except Exception as exc:  # noqa: BLE001
+            raise MaskError(f"Cannot read mask image: {exc}") from exc
+
+    raise MaskError(f"Unsupported mask type: {type(mask_source)}")
+
+
+def decode_mask_to_float(
+    mask_source: MaskSource,
+    target_size: Optional[Tuple[int, int]] = None,
+    invert_mask: bool = False,
+) -> Optional[np.ndarray]:
+    """Decode a mask into a float32 ``[H, W]`` array with values in ``[0..1]``.
+
+    ``target_size`` is ``(width, height)``; when given, the mask is resampled
+    to that size (bilinear, so soft edges stay soft).
+    """
+    if mask_source is None or (isinstance(mask_source, str) and not mask_source):
+        return None
+
+    image = _open_mask_image(mask_source)
+    try:
+        width, height = image.size
+        if width > MAX_MASK_DIMENSION or height > MAX_MASK_DIMENSION:
+            raise MaskError(
+                f"Mask resolution {width}x{height} exceeds the limit "
+                f"of {MAX_MASK_DIMENSION}px"
+            )
+        image.load()
+        if image.mode in ("RGBA", "LA") or (
+            image.mode == "P" and "transparency" in image.info
+        ):
+            arr = np.array(image.convert("RGBA"), dtype=np.float32) / 255.0
+            rgb_lum = 0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]
+            alpha_chan = arr[:, :, 3]
+            m_f = np.maximum(rgb_lum, alpha_chan)
+        else:
+            m_f = np.array(image.convert("L"), dtype=np.float32) / 255.0
+
+        if target_size is not None:
+            target_w, target_h = int(target_size[0]), int(target_size[1])
+            if m_f.shape[:2] != (target_h, target_w):
+                resized = Image.fromarray(
+                    np.clip(m_f * 255.0, 0, 255).astype(np.uint8), "L"
+                ).resize((target_w, target_h), Image.BILINEAR)
+                m_f = np.array(resized, dtype=np.float32) / 255.0
+
+        m_f = np.clip(m_f, 0.0, 1.0)
+        if invert_mask:
+            m_f = 1.0 - m_f
+        return m_f
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, MaskError):
+            raise
+        raise MaskError(f"Cannot decode mask image: {exc}") from exc
+    finally:
+        image.close()
+
+
+def encode_mask_png(mask: np.ndarray) -> bytes:
+    """Encode a float ``[H, W]`` mask (0..1) into PNG bytes (grayscale)."""
+    arr = np.clip(np.asarray(mask, dtype=np.float32) * 255.0, 0, 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(arr, "L").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def mask_coverage(mask: np.ndarray) -> float:
+    """Fraction of the frame covered by the mask (0..1)."""
+    arr = np.asarray(mask, dtype=np.float32)
+    if arr.size == 0:
+        return 0.0
+    return float(np.mean(arr))
+
+
+def is_mask_empty(mask: Optional[np.ndarray], threshold: float = 0.004) -> bool:
+    """True when the mask paints (almost) nothing."""
+    if mask is None:
+        return True
+    return mask_coverage(mask) <= threshold
+
+
+def composite_with_mask(
+    generated: Image.Image,
+    original: Image.Image,
+    mask: np.ndarray,
+) -> Image.Image:
+    """Compose ``generated`` over ``original`` using the mask.
+
+    ``result = generated * mask + original * (1 - mask)``
+
+    The composite is produced at the ORIGINAL image resolution so that every
+    pixel outside the mask stays bit-identical to the source image.
+    """
+    orig_w, orig_h = original.size
+    mask_arr = np.asarray(mask, dtype=np.float32)
+    if mask_arr.shape[:2] != (orig_h, orig_w):
+        mask_arr = decode_mask_to_float(mask_arr, target_size=(orig_w, orig_h))
+        if mask_arr is None:  # pragma: no cover - defensive
+            mask_arr = np.zeros((orig_h, orig_w), dtype=np.float32)
+
+    gen_rgb = generated.convert("RGB").resize((orig_w, orig_h), Image.LANCZOS)
+    orig_rgba = original.convert("RGBA")
+    has_alpha = "A" in original.getbands() or "transparency" in original.info
+
+    gen_arr = np.asarray(gen_rgb, dtype=np.float32)
+    orig_arr = np.asarray(orig_rgba, dtype=np.float32)[:, :, :3]
+
+    m3 = mask_arr[:, :, None]
+    out = gen_arr * m3 + orig_arr * (1.0 - m3)
+    out_rgb = np.clip(out, 0, 255).astype(np.uint8)
+    if not has_alpha:
+        return Image.fromarray(out_rgb, "RGB")
+    out_rgba = np.dstack((out_rgb, np.asarray(orig_rgba)[:, :, 3]))
+    return Image.fromarray(out_rgba, "RGBA")
+
+
+def save_mask_file(mask: np.ndarray, directory: Path, name: str) -> Path:
+    """Persist a mask as PNG inside ``directory`` (created on demand)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_bytes(encode_mask_png(mask))
+    return path
+
+
+def mask_file_name(prefix: str = "mask", extension: str = ".png") -> str:
+    """Build a safe file name for a mask artefact."""
+    safe_prefix = "".join(ch for ch in prefix if ch.isalnum() or ch in ("-", "_")) or "mask"
+    return f"{safe_prefix}_{os.getpid()}{extension}"

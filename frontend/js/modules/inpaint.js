@@ -1,0 +1,1110 @@
+/* ============================================================
+   QuantFunc WebUI — Inpaint Studio (layered workspace)
+   Layers: Исходник (locked base) / Маска (editable) / Результат (generated fragment).
+   The result layer is clipped by the mask it was generated from, so the
+   original layer is never modified.
+   ============================================================ */
+
+import { apiGet, apiPost, apiUpload, toast, escapeHtml } from "../api.js";
+import {
+  createMaskSurface,
+  pointerToCanvasPoint,
+  MASK_DEFAULT_BRUSH_SIZE,
+  MASK_DEFAULT_SOFTNESS,
+} from "./mask-core.js";
+
+const INPAINT_MAX_HISTORY = 20;
+
+let layerSeq = 0;
+function nextLayerId(prefix) {
+  layerSeq += 1;
+  return `${prefix}_${Date.now().toString(36)}_${layerSeq.toString(36)}`;
+}
+
+// ---------- state ----------
+export function getInpaintState(appRef = null) {
+  const app = appRef || window.App;
+  if (!app) return null;
+  if (!app.state.inpaint) {
+    app.state.inpaint = {
+      source: null,
+      layers: [],
+      activeLayerId: null,
+      history: [],
+      future: [],
+      brushSize: MASK_DEFAULT_BRUSH_SIZE,
+      softness: MASK_DEFAULT_SOFTNESS,
+      mode: "brush",
+      generating: false,
+      applyingResult: false,
+      jobId: null,
+      pollTimer: null,
+      lastMaskSnapshot: null,
+      sourceLoadSeq: 0,
+      jobContext: null,
+    };
+  }
+  return app.state.inpaint;
+}
+
+function t(key, fallback, vars) {
+  const fn = typeof window !== "undefined" ? window.t : null;
+  if (typeof fn === "function") {
+    const value = fn(key, vars || {});
+    if (value && value !== key) return value;
+  }
+  return fallback || key;
+}
+
+// ---------- helpers ----------
+function compositeCanvas(app) {
+  return document.getElementById("inpaint-composite");
+}
+
+function maskStack(app) {
+  return document.getElementById("inpaint-mask-stack");
+}
+
+function activeLayer(state) {
+  if (!state) return null;
+  return state.layers.find((l) => l.id === state.activeLayerId) || null;
+}
+
+function activeMaskLayer(state) {
+  const layer = activeLayer(state);
+  return layer && layer.type === "mask" ? layer : null;
+}
+
+function layerById(state, id) {
+  return state.layers.find((l) => l.id === id) || null;
+}
+
+// ---------- mask layer plumbing ----------
+function createMaskLayer(state, name) {
+  const width = state.source?.width || 1024;
+  const height = state.source?.height || 1024;
+
+  const dataCanvas = document.createElement("canvas");
+  dataCanvas.width = width;
+  dataCanvas.height = height;
+
+  const viewCanvas = document.createElement("canvas");
+  viewCanvas.width = width;
+  viewCanvas.height = height;
+  viewCanvas.className = "inpaint-mask-canvas";
+  viewCanvas.dataset.layerId = "";
+
+  const surface = createMaskSurface(dataCanvas, { visualCanvas: viewCanvas });
+
+  const layer = {
+    id: nextLayerId("mask"),
+    type: "mask",
+    name: name || t("inpaint.layer.mask", "Маска"),
+    visible: true,
+    opacity: 1,
+    locked: false,
+    surface,
+    dataCanvas,
+    viewCanvas,
+  };
+  viewCanvas.dataset.layerId = layer.id;
+  return layer;
+}
+
+function attachMaskLayerView(app, layer) {
+  const stack = maskStack(app);
+  if (!stack || !layer) return;
+  if (layer.viewCanvas && layer.viewCanvas.parentElement !== stack) {
+    stack.appendChild(layer.viewCanvas);
+  }
+  layer.viewCanvas.style.display = "none";
+  layer.viewCanvas.style.pointerEvents = "none";
+}
+
+function refreshMaskLayerViews(app) {
+  const state = getInpaintState(app);
+  if (!state) return;
+  for (const layer of state.layers) {
+    if (layer.type !== "mask") continue;
+    if (!layer.viewCanvas) continue;
+    const isActive = layer.id === state.activeLayerId;
+    layer.viewCanvas.style.display = isActive && layer.visible ? "block" : "none";
+    layer.viewCanvas.style.pointerEvents = isActive && layer.visible ? "auto" : "none";
+    layer.viewCanvas.style.opacity = String(layer.opacity ?? 1);
+  }
+}
+
+// ---------- rendering ----------
+export function renderInpaintComposite(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  const canvas = compositeCanvas(app);
+  if (!canvas || !state) return;
+
+  const width = state.source?.width || canvas.width || 1024;
+  const height = state.source?.height || canvas.height || 1024;
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+
+  for (const layer of state.layers) {
+    if (!layer.visible) continue;
+    if (layer.type === "source") {
+      if (layer.image) {
+        ctx.save();
+        ctx.globalAlpha = Number.isFinite(layer.opacity) ? layer.opacity : 1;
+        ctx.drawImage(layer.image, 0, 0, width, height);
+        ctx.restore();
+      }
+    } else if (layer.type === "result") {
+      drawResultLayer(ctx, layer, width, height);
+    }
+  }
+}
+
+function drawResultLayer(ctx, layer, width, height) {
+  if (!layer.image) return;
+  const tmp = getScratchCanvas(width, height);
+  const tctx = tmp.getContext("2d");
+  tctx.clearRect(0, 0, width, height);
+  tctx.drawImage(layer.image, 0, 0, width, height);
+
+  if (layer.maskImage) {
+    tctx.globalCompositeOperation = "destination-in";
+    tctx.drawImage(layer.maskImage, 0, 0, width, height);
+    tctx.globalCompositeOperation = "source-over";
+  }
+
+  ctx.save();
+  ctx.globalAlpha = Number.isFinite(layer.opacity) ? layer.opacity : 1;
+  ctx.drawImage(tmp, 0, 0);
+  ctx.restore();
+}
+
+let _scratch = null;
+function getScratchCanvas(width, height) {
+  if (!_scratch) _scratch = document.createElement("canvas");
+  if (_scratch.width !== width || _scratch.height !== height) {
+    _scratch.width = width;
+    _scratch.height = height;
+  }
+  return _scratch;
+}
+
+// ---------- history (strokes + layer operations) ----------
+function captureSnapshot(state) {
+  return {
+    activeLayerId: state.activeLayerId,
+    layers: state.layers.map((layer) => ({
+      id: layer.id,
+      type: layer.type,
+      name: layer.name,
+      visible: layer.visible,
+      opacity: layer.opacity,
+      url: layer.url || null,
+      maskDataUrl: layer.type === "mask" ? layer.surface.toDataURL() : null,
+      maskImageSrc: layer.type === "result" ? layer.maskImageSrc || null : null,
+    })),
+  };
+}
+
+function pushHistory(state, snapshot = null) {
+  state.history.push(snapshot || captureSnapshot(state));
+  while (state.history.length > INPAINT_MAX_HISTORY) state.history.shift();
+  state.future.length = 0;
+}
+
+async function restoreSnapshot(app, snapshot) {
+  const state = getInpaintState(app);
+  if (!state || !snapshot) return;
+
+  const stack = maskStack(app);
+  if (stack) stack.innerHTML = "";
+
+  const restored = [];
+  for (const saved of snapshot.layers) {
+    if (saved.type === "source") {
+      const source = state.source;
+      if (!source) continue;
+      restored.push({
+        id: saved.id,
+        type: "source",
+        name: saved.name,
+        visible: saved.visible,
+        opacity: saved.opacity,
+        locked: true,
+        image: source.img,
+        url: source.url,
+      });
+    } else if (saved.type === "mask") {
+      const layer = createMaskLayer(state, saved.name);
+      layer.id = saved.id;
+      layer.visible = saved.visible;
+      layer.opacity = saved.opacity;
+      if (saved.maskDataUrl) await layer.surface.loadDataURL(saved.maskDataUrl);
+      attachMaskLayerView(app, layer);
+      restored.push(layer);
+    } else if (saved.type === "result") {
+      const layer = {
+        id: saved.id,
+        type: "result",
+        name: saved.name,
+        visible: saved.visible,
+        opacity: saved.opacity,
+        url: saved.url || null,
+        image: null,
+        maskImage: null,
+        maskImageSrc: saved.maskImageSrc || null,
+      };
+      if (layer.url) {
+        const img = new Image();
+        await new Promise((resolve) => {
+          img.onload = resolve;
+          img.onerror = resolve;
+          img.src = layer.url;
+        });
+        layer.image = img;
+      }
+      if (layer.maskImageSrc) {
+        const mimg = new Image();
+        await new Promise((resolve) => {
+          mimg.onload = resolve;
+          mimg.onerror = resolve;
+          mimg.src = layer.maskImageSrc;
+        });
+        layer.maskImage = mimg;
+      }
+      restored.push(layer);
+    }
+  }
+
+  state.layers = restored;
+  state.activeLayerId = snapshot.activeLayerId;
+  if (!layerById(state, state.activeLayerId)) {
+    const fallback = state.layers.find((l) => l.type === "mask") || state.layers[0] || null;
+    state.activeLayerId = fallback ? fallback.id : null;
+  }
+  refreshMaskLayerViews(app);
+  renderInpaintComposite(app);
+  renderInpaintLayersUI(app);
+}
+
+export function undoInpaint(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state || !state.history.length) return;
+  const current = captureSnapshot(state);
+  const previous = state.history.pop();
+  state.future.push(current);
+  restoreSnapshot(app, previous);
+}
+
+export function redoInpaint(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state || !state.future.length) return;
+  const current = captureSnapshot(state);
+  const next = state.future.pop();
+  state.history.push(current);
+  restoreSnapshot(app, next);
+}
+
+// ---------- source ----------
+export async function loadInpaintSource(url, path, name, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!app || !state) return;
+  if (state.generating || state.applyingResult) {
+    toast("warning", t("inpaint.hint.generating", "Генерация уже выполняется"));
+    return;
+  }
+
+  const loadSeq = (state.sourceLoadSeq || 0) + 1;
+  state.sourceLoadSeq = loadSeq;
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = () => reject(new Error("Не удалось загрузить изображение"));
+    img.src = url;
+  }).catch((err) => {
+    toast("error", err.message || "Не удалось загрузить изображение");
+  });
+
+  if (state.sourceLoadSeq !== loadSeq || !img.complete || !img.naturalWidth) return;
+
+  state.source = {
+    token: loadSeq,
+    url,
+    path: path || "",
+    name: name || (url.split("/").pop() || "image.png"),
+    width: img.naturalWidth,
+    height: img.naturalHeight,
+    img,
+  };
+
+  state.layers = [];
+  state.history.length = 0;
+  state.future.length = 0;
+
+  const sourceLayer = {
+    id: nextLayerId("source"),
+    type: "source",
+    name: t("inpaint.layer.source", "Исходник"),
+    visible: true,
+    opacity: 1,
+    locked: true,
+    image: img,
+    url,
+  };
+  state.layers.push(sourceLayer);
+  state.activeLayerId = sourceLayer.id;
+
+  const stack = maskStack(app);
+  if (stack) stack.innerHTML = "";
+
+  const maskLayer = createMaskLayer(state);
+  attachMaskLayerView(app, maskLayer);
+  state.layers.push(maskLayer);
+  state.activeLayerId = maskLayer.id;
+
+  refreshMaskLayerViews(app);
+  renderInpaintComposite(app);
+  renderInpaintLayersUI(app);
+  updateInpaintStatus(app);
+  syncInpaintGeometry(app);
+}
+
+// ---------- geometry ----------
+export function syncInpaintGeometry(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!app || !state) return;
+  const canvas = compositeCanvas(app);
+  if (!canvas || !state.source) return;
+  if (canvas.width !== state.source.width) canvas.width = state.source.width;
+  if (canvas.height !== state.source.height) canvas.height = state.source.height;
+  for (const layer of state.layers) {
+    if (layer.type !== "mask") continue;
+    if (layer.viewCanvas.width !== state.source.width) layer.viewCanvas.width = state.source.width;
+    if (layer.viewCanvas.height !== state.source.height) layer.viewCanvas.height = state.source.height;
+  }
+}
+
+// ---------- layers panel ----------
+export function renderInpaintLayersUI(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  const list = document.getElementById("inpaint-layers-list");
+  if (!app || !state || !list) return;
+
+  const layer = activeLayer(state);
+  const opacityInput = document.getElementById("inpaint-layer-opacity");
+  const opacityNum = document.getElementById("inpaint-layer-opacity-num");
+  const opacity = layer ? Number(layer.opacity ?? 1) : 1;
+  if (opacityInput) opacityInput.value = String(opacity);
+  if (opacityNum) opacityNum.textContent = opacity.toFixed(2);
+
+  const deleteBtn = document.getElementById("inpaint-layer-delete");
+  if (deleteBtn) deleteBtn.disabled = !layer || layer.type === "source";
+
+  // Top-most layer first (like the Halftone Studio panel)
+  const ordered = [...state.layers].reverse();
+
+  list.innerHTML = ordered.map((l) => {
+    const isActive = l.id === state.activeLayerId;
+    const badge =
+      l.type === "source" ? "🔒" : l.type === "mask" ? "🎭" : "✨";
+    const thumb = layerThumb(l);
+    return `
+      <div class="inpaint-layer-item${isActive ? " active" : ""}" data-layer-id="${l.id}" onclick="App.selectInpaintLayer('${l.id}')">
+        <span class="inpaint-layer-badge">${badge}</span>
+        <span class="inpaint-layer-thumb">${thumb}</span>
+        <span class="inpaint-layer-name" title="${escapeHtml(l.name)}">${escapeHtml(l.name)}</span>
+        <button class="inpaint-layer-eye" title="${l.visible ? "Скрыть" : "Показать"}" onclick="event.stopPropagation(); App.toggleInpaintLayerVisible('${l.id}')">${l.visible ? "👁" : "🚫"}</button>
+      </div>`;
+  }).join("");
+
+  if (!state.layers.length) {
+    list.innerHTML = `<div class="inpaint-layers-empty">${t("inpaint.layers.empty", "Слоёв пока нет — загрузите изображение")}</div>`;
+  }
+}
+
+function layerThumb(layer) {
+  if (layer.type === "source") {
+    return layer.url ? `<img src="${escapeHtml(layer.url)}" alt="" />` : "";
+  }
+  if (layer.type === "result") {
+    return layer.url ? `<img src="${escapeHtml(layer.url)}" alt="" />` : "";
+  }
+  return `<span class="inpaint-layer-thumb-mask">🎭</span>`;
+}
+
+export function selectInpaintLayer(id, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const layer = layerById(state, id);
+  if (!layer) return;
+  state.activeLayerId = id;
+  refreshMaskLayerViews(app);
+  renderInpaintLayersUI(app);
+  updateInpaintStatus(app);
+}
+
+export function addInpaintMaskLayer(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  if (!state.source) {
+    toast("warning", t("inpaint.hint.no_source", "Сначала загрузите изображение"));
+    return;
+  }
+  pushHistory(state);
+  const layer = createMaskLayer(state, `${t("inpaint.layer.mask", "Маска")} ${state.layers.filter((l) => l.type === "mask").length + 1}`);
+  attachMaskLayerView(app, layer);
+  state.layers.push(layer);
+  state.activeLayerId = layer.id;
+  refreshMaskLayerViews(app);
+  renderInpaintLayersUI(app);
+  updateInpaintStatus(app);
+}
+
+export function addInpaintResultLayer(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  if (!state.source) {
+    toast("warning", t("inpaint.hint.no_source", "Сначала загрузите изображение"));
+    return;
+  }
+  pushHistory(state);
+  const layer = {
+    id: nextLayerId("result"),
+    type: "result",
+    name: `${t("inpaint.layer.result", "Результат")} ${state.layers.filter((l) => l.type === "result").length + 1}`,
+    visible: true,
+    opacity: 1,
+    image: null,
+    maskImage: null,
+    maskImageSrc: null,
+    url: null,
+  };
+  state.layers.push(layer);
+  state.activeLayerId = layer.id;
+  renderInpaintLayersUI(app);
+  updateInpaintStatus(app);
+}
+
+export function removeInpaintLayer(id, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const layer = layerById(state, id);
+  if (!layer) return;
+  if (layer.type === "source") {
+    toast("warning", t("inpaint.hint.source_locked", "Слой «Исходник» удалить нельзя"));
+    return;
+  }
+  pushHistory(state);
+  state.layers = state.layers.filter((l) => l.id !== id);
+  if (layer.viewCanvas && layer.viewCanvas.parentElement) layer.viewCanvas.parentElement.removeChild(layer.viewCanvas);
+  if (state.activeLayerId === id) {
+    const fallback = state.layers.find((l) => l.type === "mask") || state.layers[state.layers.length - 1] || null;
+    state.activeLayerId = fallback ? fallback.id : null;
+  }
+  refreshMaskLayerViews(app);
+  renderInpaintComposite(app);
+  renderInpaintLayersUI(app);
+  updateInpaintStatus(app);
+}
+
+export function duplicateInpaintLayer(id, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const layer = layerById(state, id);
+  if (!layer) return;
+  if (layer.type === "source") {
+    toast("warning", t("inpaint.hint.source_locked", "Слой «Исходник» дублировать нельзя"));
+    return;
+  }
+  pushHistory(state);
+  const copy = { ...layer };
+  copy.id = nextLayerId(layer.type);
+  copy.name = `${layer.name} ${t("inpaint.layer.copy_suffix", "(копия)")}`;
+  if (layer.type === "mask") {
+    copy.dataCanvas = document.createElement("canvas");
+    copy.dataCanvas.width = layer.dataCanvas.width;
+    copy.dataCanvas.height = layer.dataCanvas.height;
+    copy.dataCanvas.getContext("2d").drawImage(layer.dataCanvas, 0, 0);
+    copy.viewCanvas = document.createElement("canvas");
+    copy.viewCanvas.width = layer.viewCanvas.width;
+    copy.viewCanvas.height = layer.viewCanvas.height;
+    copy.viewCanvas.className = "inpaint-mask-canvas";
+    copy.surface = createMaskSurface(copy.dataCanvas, { visualCanvas: copy.viewCanvas });
+    copy.surface.loadDataURL(layer.surface.toDataURL());
+    attachMaskLayerView(app, copy);
+  }
+  const index = state.layers.findIndex((l) => l.id === id);
+  state.layers.splice(index + 1, 0, copy);
+  state.activeLayerId = copy.id;
+  refreshMaskLayerViews(app);
+  renderInpaintComposite(app);
+  renderInpaintLayersUI(app);
+}
+
+export function moveInpaintLayer(id, direction, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const index = state.layers.findIndex((l) => l.id === id);
+  if (index < 0) return;
+  const target = direction === "up" ? index + 1 : index - 1;
+  if (target < 0 || target >= state.layers.length) return;
+  pushHistory(state);
+  const [item] = state.layers.splice(index, 1);
+  state.layers.splice(target, 0, item);
+  renderInpaintComposite(app);
+  renderInpaintLayersUI(app);
+}
+
+export function toggleInpaintLayerVisible(id, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const layer = layerById(state, id);
+  if (!layer) return;
+  pushHistory(state);
+  layer.visible = !layer.visible;
+  refreshMaskLayerViews(app);
+  renderInpaintComposite(app);
+  renderInpaintLayersUI(app);
+}
+
+export function renameInpaintLayer(id, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const layer = layerById(state, id);
+  if (!layer) return;
+  const name = window.prompt(t("inpaint.layers.rename_prompt", "Название слоя"), layer.name);
+  if (name === null) return;
+  pushHistory(state);
+  layer.name = String(name).slice(0, 80) || layer.name;
+  renderInpaintLayersUI(app);
+}
+
+export function setInpaintLayerOpacity(id, value, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const layer = layerById(state, id);
+  if (!layer) return;
+  layer.opacity = Math.max(0, Math.min(1, Number(value)));
+  refreshMaskLayerViews(app);
+  renderInpaintComposite(app);
+  const num = document.getElementById("inpaint-layer-opacity-num");
+  if (num) num.textContent = layer.opacity.toFixed(2);
+}
+
+// ---------- mask tools ----------
+export function setInpaintTool(mode, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  state.mode = mode === "eraser" ? "eraser" : "brush";
+  const layer = activeMaskLayer(state);
+  if (layer) layer.surface.mode = state.mode;
+  document.getElementById("inpaint-tool-brush")?.classList.toggle("active", state.mode === "brush");
+  document.getElementById("inpaint-tool-eraser")?.classList.toggle("active", state.mode === "eraser");
+}
+
+export function setInpaintBrushSize(value, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  state.brushSize = Math.max(1, Math.min(4096, Number(value) || MASK_DEFAULT_BRUSH_SIZE));
+  const label = document.getElementById("inpaint-brush-size-val");
+  if (label) label.textContent = String(Math.round(state.brushSize));
+  const layer = activeMaskLayer(state);
+  if (layer) layer.surface.brushSize = state.brushSize;
+  updateBrushCursor(app);
+}
+
+export function setInpaintSoftness(value, appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  state.softness = Math.max(0, Math.min(1, Number(value)));
+  const label = document.getElementById("inpaint-softness-val");
+  if (label) label.textContent = `${Math.round(state.softness * 100)}%`;
+  const layer = activeMaskLayer(state);
+  if (layer) layer.surface.softness = state.softness;
+}
+
+export function clearInpaintMask(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const layer = activeMaskLayer(state);
+  if (!layer) {
+    toast("warning", t("inpaint.hint.select_mask", "Выберите слой маски"));
+    return;
+  }
+  pushHistory(state);
+  layer.surface.clear(false);
+  updateInpaintStatus(app);
+}
+
+export function invertInpaintMask(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const layer = activeMaskLayer(state);
+  if (!layer) {
+    toast("warning", t("inpaint.hint.select_mask", "Выберите слой маски"));
+    return;
+  }
+  pushHistory(state);
+  layer.surface.invert(false);
+  updateInpaintStatus(app);
+}
+
+// ---------- status ----------
+export function updateInpaintStatus(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!app || !state) return;
+  const statusEl = document.getElementById("inpaint-status");
+  const hintEl = document.getElementById("inpaint-empty-hint");
+  const layer = activeMaskLayer(state);
+
+  if (hintEl) hintEl.style.display = state.source ? "none" : "flex";
+
+  if (!statusEl) return;
+  if (!state.source) {
+    statusEl.textContent = t("inpaint.hint.no_source", "Сначала загрузите изображение");
+    return;
+  }
+  if (!layer) {
+    statusEl.textContent = t("inpaint.hint.select_mask", "Выберите слой маски");
+    return;
+  }
+  const coverage = Math.round(layer.surface.coverage() * 100);
+  statusEl.textContent = `${t("inpaint.status.coverage", "Покрытие маски")}: ${coverage}%`;
+}
+
+// ---------- pointer painting ----------
+function updateBrushCursor(app) {
+  const cursor = document.getElementById("inpaint-brush-cursor");
+  if (!cursor) return;
+  const state = getInpaintState(app);
+  if (!state) return;
+  const layer = activeMaskLayer(state);
+  if (!layer || !layer.viewCanvas) {
+    cursor.style.display = "none";
+    return;
+  }
+  const rect = layer.viewCanvas.getBoundingClientRect();
+  if (!rect.width) return;
+  const scale = rect.width / (layer.viewCanvas.width || 1);
+  const diameter = Math.max(4, state.brushSize * scale);
+  cursor.style.width = `${diameter}px`;
+  cursor.style.height = `${diameter}px`;
+}
+
+export function initInpaintMaskEvents(appRef = null) {
+  const app = appRef || window.App;
+  if (!app) return;
+  const state = getInpaintState(app);
+  const stack = maskStack(app);
+  if (!stack) return;
+  if (stack.dataset.eventsBound === "1") return;
+  stack.dataset.eventsBound = "1";
+
+  let painting = false;
+  let strokeSnapshot = null;
+  let strokeMaskData = null;
+
+  const layerFromEvent = (event) => {
+    const el = event.target.closest?.(".inpaint-mask-canvas");
+    if (!el) return null;
+    const id = el.dataset.layerId;
+    return id ? layerById(state, id) : null;
+  };
+
+  stack.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const layer = layerFromEvent(event);
+    if (!layer || layer.type !== "mask") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = pointerToCanvasPoint(layer.viewCanvas, event);
+    if (!point) return;
+    painting = true;
+    strokeSnapshot = captureSnapshot(state);
+    strokeMaskData = layer.surface.toDataURL();
+    layer.surface.mode = state.mode;
+    layer.surface.beginStroke(point.x, point.y);
+    try { layer.viewCanvas.setPointerCapture(event.pointerId); } catch (_) {}
+  });
+
+  stack.addEventListener("pointermove", (event) => {
+    const layer = layerFromEvent(event);
+    if (layer) {
+      const point = pointerToCanvasPoint(layer.viewCanvas, event);
+      if (point) {
+        layer.surface.continueStroke(point.x, point.y);
+      }
+      updateBrushCursor(app);
+      const cursor = document.getElementById("inpaint-brush-cursor");
+      if (cursor) {
+        cursor.style.display = "block";
+        cursor.style.left = `${event.clientX}px`;
+        cursor.style.top = `${event.clientY}px`;
+      }
+    }
+  });
+
+  const endStroke = (event) => {
+    if (!painting) return;
+    painting = false;
+    const layer = activeMaskLayer(state);
+    if (layer) layer.surface.endStroke();
+    if (layer && strokeMaskData !== layer.surface.toDataURL()) {
+      pushHistory(state, strokeSnapshot);
+    }
+    strokeSnapshot = null;
+    strokeMaskData = null;
+    updateInpaintStatus(app);
+  };
+  stack.addEventListener("pointerup", endStroke);
+  stack.addEventListener("pointercancel", endStroke);
+  stack.addEventListener("pointerleave", () => {
+    const cursor = document.getElementById("inpaint-brush-cursor");
+    if (cursor) cursor.style.display = "none";
+  });
+}
+
+// ---------- generation ----------
+export async function generateInpaint(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!app || !state) return;
+
+  if (!state.source || !state.source.path) {
+    toast("warning", t("inpaint.hint.no_source", "Сначала загрузите изображение"));
+    return;
+  }
+
+  const layer = activeMaskLayer(state);
+  if (!layer || layer.type !== "mask" || !layer.visible) {
+    toast("warning", t("inpaint.hint.select_mask", "Выберите видимый слой маски"));
+    return;
+  }
+  if (layer.surface.isEmpty()) {
+    toast("warning", t("inpaint.hint.empty_mask", "Маска пуста — нарисуйте область для изменения"));
+    return;
+  }
+
+  const prompt = document.getElementById("inpaint-prompt")?.value?.trim() || "";
+  if (!prompt) {
+    toast("warning", t("inpaint.hint.no_prompt", "Введите промпт"));
+    return;
+  }
+
+  const modelId = document.getElementById("inpaint-model-select")?.value || app.state.selectedModel;
+  const model = (app.state.models || []).find((m) => m.id === modelId);
+  if (!model) {
+    toast("warning", t("inpaint.hint.no_model", "Выберите модель"));
+    return;
+  }
+  if (!model.supports_mask) {
+    const compatible = (app.state.models || []).filter((m) => m.supports_mask);
+    const names = compatible.map((m) => m.name).join(", ") || t("inpaint.hint.no_compatible", "нет в наличии");
+    toast("error", t("inpaint.hint.model_unsupported", `Модель «${model.name}» не поддерживает маску. Поддерживают: ${names}`, { name: model.name, list: names }));
+    return;
+  }
+
+  const steps = parseInt(document.getElementById("inpaint-steps")?.value || "4", 10);
+  const cfg = parseFloat(document.getElementById("inpaint-cfg")?.value || "1.0");
+  const seedRaw = document.getElementById("inpaint-seed")?.value?.trim();
+  const seed = seedRaw === "" || seedRaw === "random" ? null : parseInt(seedRaw, 10);
+  const maskDataUrl = layer.surface.toDataURL();
+  const source = state.source;
+  state.jobContext = {
+    sourceToken: source.token,
+    sourcePath: source.path,
+    maskLayerId: layer.id,
+    maskDataUrl,
+  };
+
+  const params = {
+    model_id: modelId,
+    prompt,
+    width: state.source.width,
+    height: state.source.height,
+    steps: Number.isFinite(steps) ? steps : 4,
+    cfg: Number.isFinite(cfg) ? cfg : 1.0,
+    seed: Number.isFinite(seed) ? seed : null,
+    sampler: document.getElementById("inpaint-sampler")?.value || "euler",
+    init_image_path: state.source.path,
+    init_image_strength: 1.0,
+    mask: maskDataUrl,
+    mask_strength: 1.0,
+    mask_grow: 6,
+    mask_blur: 0.0,
+  };
+
+  state.generating = true;
+  const btn = document.getElementById("inpaint-generate-btn");
+  if (btn) btn.disabled = true;
+
+  try {
+    const result = await apiPost("/api/generate", params);
+    state.jobId = result.job_id;
+    state.jobContext.jobId = result.job_id;
+    startInpaintPolling(app, result.job_id);
+  } catch (e) {
+    state.generating = false;
+    state.jobContext = null;
+    if (btn) btn.disabled = false;
+    const data = e?.data || {};
+    const compatible = Array.isArray(data.compatible_models) ? data.compatible_models : [];
+    if (compatible.length) {
+      toast("error", `${e.message} ${t("inpaint.hint.switch_model", "Переключитесь на:")} ${compatible.map((m) => m.name).join(", ")}`);
+    } else {      toast("error", e.message || "Ошибка генерации");
+    }
+  }
+}
+
+function startInpaintPolling(app, jobId) {
+  const state = getInpaintState(app);
+  if (!state) return;
+  if (state.pollTimer) clearInterval(state.pollTimer);
+
+  state.pollTimer = setInterval(async () => {
+    try {
+      const status = await apiGet(`/api/jobs/${jobId}`);
+      const progressEl = document.getElementById("inpaint-progress");
+      if (progressEl) {
+        progressEl.style.display = status.status === "complete" ? "none" : "flex";
+        progressEl.textContent = `${Math.round((status.progress || 0) * 100)}%`;
+      }
+      if (status.status === "complete") {
+        stopInpaintPolling(app);
+        await applyInpaintResult(app, status, layer => layer);
+      } else if (status.status === "error") {
+        stopInpaintPolling(app);
+        state.jobContext = null;
+        toast("error", status.error || status.message || t("inpaint.hint.generation_error", "Ошибка генерации"));
+      } else if (status.status === "cancelled") {
+        stopInpaintPolling(app);
+        state.jobContext = null;
+        toast("info", t("inpaint.hint.cancelled", "Генерация отменена"));
+      }
+    } catch (e) {
+      stopInpaintPolling(app);
+      state.jobContext = null;
+      toast("error", e.message || "Ошибка опроса задания");
+    }
+  }, 400);
+}
+
+function stopInpaintPolling(app) {
+  const state = getInpaintState(app);
+  if (!state) return;
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+  state.generating = false;
+  const btn = document.getElementById("inpaint-generate-btn");
+  if (btn) btn.disabled = false;
+  const progressEl = document.getElementById("inpaint-progress");
+  if (progressEl) progressEl.style.display = "none";
+}
+
+async function applyInpaintResult(app, status, _unused) {
+  const state = getInpaintState(app);
+  if (!state) return;
+  const context = state.jobContext;
+  if (
+    !context
+    || state.jobId !== context.jobId
+    || state.source?.token !== context.sourceToken
+    || state.sourceLoadSeq !== context.sourceToken
+  ) {
+    state.jobContext = null;
+    toast("warning", t("inpaint.hint.source_changed", "Источник изменился; результат не добавлен"));
+    return;
+  }
+
+  const raw = status.raw_image_path || null;
+  const composite = status.image_path || "";
+  const fragmentUrl = raw ? `/outputs/${raw}` : `/outputs/${String(composite).split(/[\\/]/).pop()}`;
+
+  state.applyingResult = true;
+  try {
+  const resultImage = new Image();
+  await new Promise((resolve, reject) => {
+    resultImage.onload = resolve;
+    resultImage.onerror = () => reject(new Error("Не удалось загрузить результат генерации"));
+    resultImage.src = fragmentUrl;
+  });
+
+  const maskSnapshot = context.maskDataUrl;
+  const maskImage = new Image();
+  await new Promise((resolve, reject) => {
+    maskImage.onload = resolve;
+    maskImage.onerror = () => reject(new Error("Не удалось загрузить снимок маски"));
+    maskImage.src = maskSnapshot;
+  });
+  if (
+    state.source?.token !== context.sourceToken
+    || state.sourceLoadSeq !== context.sourceToken
+  ) {
+    state.jobContext = null;
+    toast("warning", t("inpaint.hint.source_changed", "Источник изменился; результат не добавлен"));
+    return;
+  }
+  pushHistory(state);
+
+  const layer = {
+    id: nextLayerId("result"),
+    type: "result",
+    name: `${t("inpaint.layer.result", "Результат")} ${state.layers.filter((l) => l.type === "result").length + 1}`,
+    visible: true,
+    opacity: 1,
+    image: resultImage,
+    maskImage,
+    maskImageSrc: maskSnapshot,
+    url: fragmentUrl,
+  };
+
+  state.layers.push(layer);
+  state.activeLayerId = layer.id;
+  state.jobContext = null;
+
+  refreshMaskLayerViews(app);
+  renderInpaintComposite(app);
+  renderInpaintLayersUI(app);
+  updateInpaintStatus(app);
+  toast("success", t("inpaint.hint.done", "Слой результата создан"));
+  } finally {
+    state.applyingResult = false;
+  }
+}
+
+// ---------- model list ----------
+export function renderInpaintModels(appRef = null) {
+  const app = appRef || window.App;
+  const select = document.getElementById("inpaint-model-select");
+  if (!app || !select) return;
+
+  const models = app.state.models || [];
+  const previous = select.value;
+  select.innerHTML = "";
+  for (const model of models) {
+    if (model.hidden_from_host) continue;
+    const opt = document.createElement("option");
+    opt.value = model.id;
+    const mark = model.installed ? "✓" : "⬇";
+    const maskMark = model.supports_mask ? "🎭" : "⚠";
+    opt.textContent = `${mark}${maskMark} ${model.name}`;
+    select.appendChild(opt);
+  }
+  if (previous && models.some((m) => m.id === previous)) {
+    select.value = previous;
+  } else if (app.state.selectedModel) {
+    select.value = app.state.selectedModel;
+  }
+  updateInpaintModelWarning(app);
+}
+
+export function updateInpaintModelWarning(appRef = null) {
+  const app = appRef || window.App;
+  const select = document.getElementById("inpaint-model-select");
+  const warnEl = document.getElementById("inpaint-model-warning");
+  if (!app || !select || !warnEl) return;
+  const model = (app.state.models || []).find((m) => m.id === select.value);
+  if (!model) {
+    warnEl.style.display = "none";
+    return;
+  }
+  if (model.supports_mask) {
+    warnEl.style.display = "none";
+    return;
+  }
+  const compatible = (app.state.models || []).filter((m) => m.supports_mask);
+  warnEl.style.display = "flex";
+  warnEl.innerHTML = `⚠ ${t("inpaint.hint.model_unsupported_short", "Модель не поддерживает маску")} — ${compatible.map((m) => escapeHtml(m.name)).join(", ") || "—"}`;
+}
+
+// ---------- source pickers ----------
+export function useCanvasImageInInpaint(appRef = null) {
+  const app = appRef || window.App;
+  if (!app) return;
+  const url = app.state.currentPreviewUrl;
+  const path = app.state.currentPreviewFilename;
+  if (!url || !path) {
+    toast("warning", t("inpaint.hint.no_source", "Сначала загрузите изображение"));
+    return;
+  }
+  loadInpaintSource(url, path, path, app);
+}
+
+export async function uploadInpaintFile(file, appRef = null) {
+  const app = appRef || window.App;
+  if (!app || !file) return;
+  try {
+    const data = await apiUpload(file);
+    await loadInpaintSource(data.url, data.path, file.name || data.path, app);
+    toast("success", t("inpaint.hint.loaded", "Изображение загружено"));
+  } catch (e) {
+    toast("error", e.message || "Ошибка загрузки");
+  }
+}
+
+// ---------- init ----------
+export function initInpaintStudio(appRef = null) {
+  const app = appRef || window.App;
+  if (!app) return;
+  const state = getInpaintState(app);
+
+  initInpaintMaskEvents(app);
+  renderInpaintModels(app);
+  renderInpaintLayersUI(app);
+  updateInpaintStatus(app);
+
+  const brushBtn = document.getElementById("inpaint-tool-brush");
+  if (brushBtn && !brushBtn.dataset.bound) {
+    brushBtn.dataset.bound = "1";
+    brushBtn.addEventListener("click", () => setInpaintTool("brush", app));
+  }
+  const eraserBtn = document.getElementById("inpaint-tool-eraser");
+  if (eraserBtn && !eraserBtn.dataset.bound) {
+    eraserBtn.dataset.bound = "1";
+    eraserBtn.addEventListener("click", () => setInpaintTool("eraser", app));
+  }
+
+  const fileInput = document.getElementById("inpaint-file-input");
+  if (fileInput && !fileInput.dataset.bound) {
+    fileInput.dataset.bound = "1";
+    fileInput.addEventListener("change", (event) => {
+      const file = event.target.files?.[0];
+      if (file) uploadInpaintFile(file, app);
+      event.target.value = "";
+    });
+  }
+
+  if (!state._initialized) {
+    state._initialized = true;
+    setInpaintTool("brush", app);
+    setInpaintBrushSize(state.brushSize, app);
+    setInpaintSoftness(state.softness, app);
+  }
+}

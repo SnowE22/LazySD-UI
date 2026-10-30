@@ -47,6 +47,13 @@ export function initAllViewportZoomPan(appRef = null) {
     thumbYId: "manga-scrollbar-thumb-y",
   }, appRef);
 
+  initViewportZoomPan("inpaint", {
+    areaId: "inpaint-canvas-area",
+    wrapId: "inpaint-canvas-wrap",
+    hudId: "inpaint-zoom-hud",
+    labelId: "inpaint-zoom-label",
+  }, appRef);
+
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
       spacePressed = true;
@@ -117,11 +124,17 @@ export function initViewportZoomPan(mode, cfg, appRef = null) {
   let isZoomToolClick = false;
 
   area.addEventListener("pointerdown", (e) => {
+    // The inpaint mask canvas handles its own pointer events (painting).
+    if (e.button === 0 && e.target.closest?.(".inpaint-mask-canvas")) {
+      return;
+    }
     if (
       e.target.closest(".viewport-zoom-hud") ||
       e.target.closest(".viewport-scrollbar-x") ||
       e.target.closest(".viewport-scrollbar-y") ||
       e.target.closest(".preview-toolbar") ||
+      e.target.closest(".mask-fab") ||
+      e.target.closest(".mask-panel") ||
       e.target.closest(".compare-slider-bar")
     ) {
       return;

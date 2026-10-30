@@ -124,6 +124,11 @@ class ModelSpec:
     # (bundled free-trial test key or a user key from quantfunc.com).
     key_protected: bool = False
 
+    # Mask / inpaint support. True when the model can be driven with an explicit
+    # inpaint mask (white = edit, black = preserve). Models declaring
+    # pipeline "inpaint" are mask capable by definition.
+    supports_mask: bool = False
+
     # Target engine (e.g. "quantfunc" or "sd_cpp")
     engine: str = "quantfunc"
     engine_args: dict = field(default_factory=dict)
@@ -190,6 +195,9 @@ class ModelSpec:
             requirements=requirements,
             scheduler_presets=data.get("scheduler_presets", {}),
             key_protected=bool(data.get("key_protected", False)),
+            supports_mask=bool(
+                data.get("supports_mask", False) or data.get("pipeline") == "inpaint"
+            ),
             engine=data.get("engine", "quantfunc"),
             engine_args=data.get("engine_args", {}),
             engine_version=data.get("engine_version"),
@@ -420,6 +428,25 @@ class ModelRegistry:
     def list_for_pipeline(self, pipeline: str) -> list[ModelSpec]:
         """Filter models by pipeline type (text_to_image, image_edit, etc.)."""
         return [m for m in self.models.values() if m.pipeline == pipeline]
+
+    def list_mask_capable(self) -> list[ModelSpec]:
+        """List models that can be driven with an explicit inpaint mask."""
+        return [m for m in self.models.values() if model_supports_mask(m)]
+
+
+# ---------- Mask capability helpers ----------
+def model_supports_mask(spec) -> bool:
+    """True when the model card AND its engine can handle an inpaint mask.
+
+    A card has to opt in (``supports_mask: true`` or ``pipeline: "inpaint"``)
+    and the target engine must expose a documented mask argument.
+    """
+    if spec is None:
+        return False
+    if not getattr(spec, "supports_mask", False):
+        return False
+    from ..masking import engine_mask_support
+    return engine_mask_support(getattr(spec, "engine", "quantfunc"))
 
 
 # ---------- Singleton ----------
