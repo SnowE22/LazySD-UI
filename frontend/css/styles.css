@@ -6538,6 +6538,44 @@ body:not(.role-guest) #guest-mode-banner {
   overflow: hidden;
   user-select: none;
 }
+.inpaint-canvas-area.drag-over .inpaint-drop-overlay { display: flex; }
+.inpaint-canvas-actions {
+  position: absolute;
+  z-index: 20;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+.inpaint-canvas-action {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.inpaint-canvas-action:hover:not(:disabled) { background: var(--bg-hover); }
+.inpaint-canvas-action:disabled { opacity: 0.45; cursor: default; }
+.inpaint-canvas-action.danger { color: var(--text-muted); }
+.inpaint-canvas-action.danger:hover:not(:disabled) { color: var(--danger, #ff5c5c); }
+.inpaint-drop-overlay {
+  position: absolute;
+  z-index: 15;
+  inset: 12px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  background: rgba(15, 15, 18, 0.78);
+  color: var(--text-primary);
+  font-size: 16px;
+  pointer-events: none;
+}
 .inpaint-canvas-wrap {
   position: relative;
   transform-origin: center center;

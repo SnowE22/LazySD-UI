@@ -315,7 +315,7 @@ export function redoInpaint(appRef = null) {
 export async function loadInpaintSource(url, path, name, appRef = null) {
   const app = appRef || window.App;
   const state = getInpaintState(app);
-  if (!app || !state) return;
+  if (!app || !state) return false;
   if (state.generating || state.applyingResult) {
     toast("warning", t("inpaint.hint.generating", "Генерация уже выполняется"));
     return;
@@ -333,7 +333,7 @@ export async function loadInpaintSource(url, path, name, appRef = null) {
     toast("error", err.message || "Не удалось загрузить изображение");
   });
 
-  if (state.sourceLoadSeq !== loadSeq || !img.complete || !img.naturalWidth) return;
+  if (state.sourceLoadSeq !== loadSeq || !img.complete || !img.naturalWidth) return false;
 
   state.source = {
     token: loadSeq,
@@ -372,6 +372,32 @@ export async function loadInpaintSource(url, path, name, appRef = null) {
 
   refreshMaskLayerViews(app);
   renderInpaintComposite(app);
+  renderInpaintLayersUI(app);
+  updateInpaintStatus(app);
+  syncInpaintGeometry(app);
+  return true;
+}
+
+export function clearInpaintSource(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!app || !state) return;
+  state.sourceLoadSeq = (state.sourceLoadSeq || 0) + 1;
+  state.source = null;
+  state.layers = [];
+  state.activeLayerId = null;
+  state.history.length = 0;
+  state.future.length = 0;
+  state.jobContext = null;
+
+  const stack = maskStack(app);
+  if (stack) stack.replaceChildren();
+  const canvas = compositeCanvas(app);
+  if (canvas) {
+    canvas.width = 1024;
+    canvas.height = 1024;
+    canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+  }
   renderInpaintLayersUI(app);
   updateInpaintStatus(app);
   syncInpaintGeometry(app);
@@ -680,9 +706,11 @@ export function updateInpaintStatus(appRef = null) {
   if (!app || !state) return;
   const statusEl = document.getElementById("inpaint-status");
   const hintEl = document.getElementById("inpaint-empty-hint");
+  const clearBtn = document.getElementById("inpaint-clear-source");
   const layer = activeMaskLayer(state);
 
   if (hintEl) hintEl.style.display = state.source ? "none" : "flex";
+  if (clearBtn) clearBtn.disabled = !state.source;
 
   if (!statusEl) return;
   if (!state.source) {
@@ -1060,10 +1088,22 @@ export function useCanvasImageInInpaint(appRef = null) {
 export async function uploadInpaintFile(file, appRef = null) {
   const app = appRef || window.App;
   if (!app || !file) return;
+  const allowedTypes = ["image/png", "image/jpeg", "image/webp"];
+  if (
+    !allowedTypes.includes(file.type)
+    && !/\.(png|jpe?g|webp)$/i.test(file.name || "")
+  ) {
+    toast("error", "Поддерживаются только PNG, JPEG и WebP");
+    return;
+  }
+  if (file.size > 25 * 1024 * 1024) {
+    toast("error", "Размер файла не должен превышать 25 МБ");
+    return;
+  }
   try {
     const data = await apiUpload(file);
-    await loadInpaintSource(data.url, data.path, file.name || data.path, app);
-    toast("success", t("inpaint.hint.loaded", "Изображение загружено"));
+    const loaded = await loadInpaintSource(data.url, data.path, file.name || data.path, app);
+    if (loaded) toast("success", t("inpaint.hint.loaded", "Изображение загружено"));
   } catch (e) {
     toast("error", e.message || "Ошибка загрузки");
   }
@@ -1098,6 +1138,42 @@ export function initInpaintStudio(appRef = null) {
       const file = event.target.files?.[0];
       if (file) uploadInpaintFile(file, app);
       event.target.value = "";
+    });
+  }
+
+  const canvasArea = document.getElementById("inpaint-canvas-area");
+  if (canvasArea && !canvasArea.dataset.dropBound) {
+    canvasArea.dataset.dropBound = "1";
+    let dragDepth = 0;
+    canvasArea.addEventListener("dragenter", (event) => {
+      if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+      event.preventDefault();
+      dragDepth += 1;
+      canvasArea.classList.add("drag-over");
+    });
+    canvasArea.addEventListener("dragover", (event) => {
+      if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    });
+    canvasArea.addEventListener("dragleave", (event) => {
+      if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+      event.preventDefault();
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (!dragDepth) canvasArea.classList.remove("drag-over");
+    });
+    canvasArea.addEventListener("drop", (event) => {
+      if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragDepth = 0;
+      canvasArea.classList.remove("drag-over");
+      const file = Array.from(event.dataTransfer.files || []).find((item) =>
+        ["image/png", "image/jpeg", "image/webp"].includes(item.type)
+        || /\.(png|jpe?g|webp)$/i.test(item.name || "")
+      );
+      if (file) uploadInpaintFile(file, app);
+      else toast("error", "Перетащите изображение PNG, JPEG или WebP");
     });
   }
 

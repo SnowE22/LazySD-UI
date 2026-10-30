@@ -713,6 +713,58 @@ class ExtrasWorker:
             if rp.exists():
                 ref_image_path = str(rp)
 
+        # ----- Inpaint mask preparation -----
+        # The raw mask is kept in the parent for the guaranteed compositing;
+        # the engine receives a PNG with grow/blur applied (white = edit).
+        mask_source = getattr(request, "mask_data_url", None) or (
+            str(request.mask_path) if getattr(request, "mask_path", None) else None
+        )
+        mask_ctx = None
+        if mask_source:
+            if not ref_image_path:
+                raise ValueError(
+                    "Mask editing requires a source image (init_image_path is missing)"
+                )
+            from PIL import Image
+            from .masking import (
+                MaskError,
+                mask_file_name,
+                prepare_mask_arrays,
+                save_mask_file,
+            )
+
+            with Image.open(ref_image_path) as src_file:
+                source_image = src_file.copy()
+            try:
+                raw_mask, engine_mask = prepare_mask_arrays(
+                    mask_source,
+                    target_size=source_image.size,
+                    invert_mask=bool(getattr(request, "mask_invert", False)),
+                    grow=int(getattr(request, "mask_grow", 0) or 0),
+                    blur=float(getattr(request, "mask_blur", 0.0) or 0.0),
+                )
+            except MaskError as exc:
+                raise ValueError(str(exc)) from exc
+            mask_file = save_mask_file(
+                engine_mask,
+                settings.output_dir / "masks",
+                mask_file_name(f"{engine}_mask"),
+            )
+            mask_ctx = {
+                "array": raw_mask,
+                "file": mask_file,
+                "source_image": source_image,
+            }
+            emit(ProgressEvent(
+                status=JobStatus.INITIALIZING,
+                message=f"Mask ready ({source_image.size[0]}x{source_image.size[1]})",
+            ))
+
+        # ``mask_strength`` may legitimately be 0.0 (degenerate "no change"
+        # request), so ``or`` must NOT be used here — it would turn 0 into 1.
+        raw_mask_strength = getattr(request, "mask_strength", None)
+        mask_strength_value = 1.0 if raw_mask_strength is None else float(raw_mask_strength)
+
         lora_paths = [str(p) for p in (getattr(request, "lora_paths", None) or [])]
         lora_strengths = [float(s) for s in (getattr(request, "lora_strengths", None) or [])]
         steps = int(request.steps or 4)
@@ -782,6 +834,8 @@ class ExtrasWorker:
             "height": height,
             "output_path": str(output_path),
             "init_image_path": ref_image_path,
+            "mask_path": str(mask_ctx["file"]) if mask_ctx else None,
+            "mask_strength": mask_strength_value,
             "lora_paths": lora_paths,
             "lora_strengths": lora_strengths,
         }
@@ -858,6 +912,38 @@ class ExtrasWorker:
             tail = "\n".join(captured_lines[-40:]) if captured_lines else "(no output)"
             raise RuntimeError(f"{engine.upper()} process exited with code {proc.returncode}.\n{tail}")
 
+        # ----- Mask compositing (guaranteed preservation) -----
+        # result = generated * mask + original * (1 - mask), at the ORIGINAL
+        # resolution.  The raw engine output is kept as the Inpaint fragment.
+        raw_fragment_rel = None
+        if mask_ctx is not None:
+            from PIL import Image
+            from .masking import composite_with_mask
+
+            try:
+                with Image.open(output_path) as gen_file:
+                    generated_rgb = gen_file.convert("RGB")
+                source_image = mask_ctx["source_image"]
+                composite = composite_with_mask(
+                    generated_rgb, source_image, mask_ctx["array"]
+                )
+                composite.save(output_path, format="PNG")
+
+                frag_dir = settings.output_dir / "masks"
+                frag_dir.mkdir(parents=True, exist_ok=True)
+                frag_path = frag_dir / f"{output_path.stem}_raw.png"
+                generated_rgb.resize(source_image.size, Image.LANCZOS).save(
+                    frag_path, format="PNG"
+                )
+                raw_fragment_rel = f"masks/{frag_path.name}"
+                print(
+                    f"[extras] Mask composite applied -> {output_path.name} "
+                    f"(fragment: {raw_fragment_rel})",
+                    flush=True,
+                )
+            except Exception as comp_err:
+                raise RuntimeError(f"Mask compositing failed: {comp_err}") from comp_err
+
         elapsed = time.time() - start_time
         sidecar_path = output_path.with_suffix(".json")
         try:
@@ -881,11 +967,29 @@ class ExtrasWorker:
                 "generation_time_sec": round(elapsed, 2),
                 "timestamp": int(time.time()),
             }
+            if mask_ctx is not None:
+                meta.update({
+                    "mask_applied": True,
+                    "mask_strength": mask_strength_value,
+                    "mask_grow": int(getattr(request, "mask_grow", 0) or 0),
+                    "mask_blur": float(getattr(request, "mask_blur", 0.0) or 0.0),
+                    "mask_source": mask_ctx["file"].name,
+                    "mask_raw_fragment": raw_fragment_rel,
+                    "composite": "generated*mask + original*(1-mask)",
+                })
+            else:
+                meta["mask_applied"] = False
             sidecar_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
 
-        emit(ProgressEvent(status=JobStatus.COMPLETE, progress=1.0, image_path=str(output_path), message=f"Done in {elapsed:.1f}s"))
+        emit(ProgressEvent(
+            status=JobStatus.COMPLETE,
+            progress=1.0,
+            image_path=str(output_path),
+            raw_image_path=raw_fragment_rel,
+            message=f"Done in {elapsed:.1f}s",
+        ))
         return GenerateResult(
             image_path=output_path,
             seed_used=seed,
@@ -916,11 +1020,20 @@ def _run_extras_job_cli(job_json_path: str) -> int:
         height = int(payload.get("height", 1024))
         output_path = Path(payload["output_path"])
         init_image_path = payload.get("init_image_path")
+        mask_path = payload.get("mask_path")
+        raw_strength = payload.get("mask_strength", 1.0)
+        mask_strength = 1.0 if raw_strength is None else float(raw_strength)
+        has_mask = bool(mask_path and Path(mask_path).is_file())
         lora_paths = payload.get("lora_paths") or []
         lora_strengths = payload.get("lora_strengths") or []
 
         is_flux3 = ("flux3" in family or "flux-3" in family
                     or "flux-3" in str(repo_id).lower() or "flux3" in str(repo_id).lower())
+        if has_mask and (is_flux3 or not ("klein" in family or "flux2" in family)):
+            raise RuntimeError(
+                "Inpaint masks are only wired for FLUX.2 Klein in the extras runtime "
+                f"(engine={engine}, family={family})."
+            )
         has_local_pipeline = ((model_dir / "model_index.json").exists()
                               or (model_dir / "modular_model_index.json").exists())
         base_source = str(model_dir) if has_local_pipeline else (payload.get("base_model_repo") or repo_id)
@@ -1026,7 +1139,10 @@ def _run_extras_job_cli(job_json_path: str) -> int:
                 if te_obj is not None:
                     pipe_kwargs["text_encoder"] = te_obj
 
-                if "klein" in family or "flux" in family:
+                if has_mask:
+                    from diffusers import Flux2KleinInpaintPipeline
+                    pipe = Flux2KleinInpaintPipeline.from_pretrained(base_source, **pipe_kwargs)
+                elif "klein" in family or "flux" in family:
                     from diffusers import Flux2KleinPipeline
                     pipe = Flux2KleinPipeline.from_pretrained(base_source, **pipe_kwargs)
                 else:
@@ -1036,13 +1152,17 @@ def _run_extras_job_cli(job_json_path: str) -> int:
         else:
             print(f"[status] Loading OrbitQuant W4A4 pipeline from base '{base_source}'...", flush=True)
             import orbitquant  # noqa: F401
-            from diffusers import DiffusionPipeline
             pipe_kwargs = {
                 "torch_dtype": torch.bfloat16,
             }
             if te_obj is not None:
                 pipe_kwargs["text_encoder"] = te_obj
-            pipe = DiffusionPipeline.from_pretrained(base_source, **pipe_kwargs)
+            if has_mask:
+                from diffusers import Flux2KleinInpaintPipeline
+                pipe = Flux2KleinInpaintPipeline.from_pretrained(base_source, **pipe_kwargs)
+            else:
+                from diffusers import DiffusionPipeline
+                pipe = DiffusionPipeline.from_pretrained(base_source, **pipe_kwargs)
             pipe.enable_model_cpu_offload()
 
         def on_step_end(pipe_inst, step_idx, timestep, callback_kwargs):
@@ -1086,6 +1206,9 @@ def _run_extras_job_cli(job_json_path: str) -> int:
             }
             if init_image_path and Path(init_image_path).is_file():
                 call_kwargs["image"] = Image.open(init_image_path).convert("RGB")
+            if has_mask:
+                call_kwargs["mask_image"] = Image.open(mask_path).convert("L")
+                call_kwargs["strength"] = max(0.01, min(1.0, mask_strength))
 
             print(f"[status] Sampling ({steps} steps)...", flush=True)
             out = pipe(**call_kwargs).images[0]

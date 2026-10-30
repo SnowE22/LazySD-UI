@@ -3,6 +3,7 @@
   "name": "Flux.1 Schnell (GGUF)",
   "family": "flux",
   "pipeline": "text_to_image",
+  "supports_mask": true,
   "engine": "sd_cpp",
   "engine_version": "sd_cpp",
   "description": "Black Forest Labs FLUX.1 [schnell] 4-step distilled diffusion model via stable-diffusion.cpp. Uses 4-bit quantized diffusion weights and quantized T5-XXL text encoder, fitting in 8-12 GB VRAM.",

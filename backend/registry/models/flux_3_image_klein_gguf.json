@@ -3,6 +3,7 @@
   "name": "FLUX 3 Image Klein (GGUF)",
   "family": "flux",
   "pipeline": "text_to_image",
+  "supports_mask": true,
   "engine": "sd_cpp",
   "engine_version": "sd_cpp",
   "description": "Black Forest Labs FLUX 3 Image Klein (16-step distilled) via stable-diffusion.cpp with GGUF quantizations from Abiray. Multimodal diffusion model with Q8_0, Q6_K, Q5_K_M, Q4_K_M, and Q3_K_S variants, powered by Qwen3-VL-4B text encoder and Flux2 VAE.",

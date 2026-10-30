@@ -692,6 +692,65 @@ class SDCppWorker:
                 if tok_path and tok_path.exists():
                     cmd.extend(["--tokenizer", str(tok_path)])
 
+        # ----- Inpaint mask preparation -----
+        # SD.CPP applies --mask to the init image (white = regenerate,
+        # black = preserve), so a mask always forces classic img2img mode.
+        mask_source = getattr(request, "mask_data_url", None) or (
+            str(request.mask_path) if getattr(request, "mask_path", None) else None
+        )
+        mask_ctx = None
+        if mask_source:
+            from PIL import Image
+            from .masking import (
+                MaskError,
+                mask_file_name,
+                prepare_mask_arrays,
+                save_mask_file,
+            )
+
+            raw_init = getattr(request, "init_image_path", None)
+            if not raw_init:
+                raise ValueError(
+                    "Mask editing requires a source image (init_image_path is missing)"
+                )
+            source_path = Path(raw_init)
+            if not source_path.is_absolute():
+                source_path = settings.output_dir / source_path
+            if not source_path.exists():
+                raise ValueError(f"Source image not found: {source_path.name}")
+
+            with Image.open(source_path) as src_file:
+                source_image = src_file.copy()
+            try:
+                raw_mask, engine_mask = prepare_mask_arrays(
+                    mask_source,
+                    target_size=source_image.size,
+                    invert_mask=bool(getattr(request, "mask_invert", False)),
+                    grow=int(getattr(request, "mask_grow", 0) or 0),
+                    blur=float(getattr(request, "mask_blur", 0.0) or 0.0),
+                )
+            except MaskError as exc:
+                raise ValueError(str(exc)) from exc
+            mask_file = save_mask_file(
+                engine_mask,
+                settings.output_dir / "masks",
+                mask_file_name("sd_cpp_mask"),
+            )
+            mask_ctx = {
+                "array": raw_mask,
+                "file": mask_file,
+                "source_image": source_image,
+            }
+            emit(ProgressEvent(
+                status=JobStatus.INITIALIZING,
+                message=f"Mask ready ({source_image.size[0]}x{source_image.size[1]})",
+            ))
+
+        # ``mask_strength`` may legitimately be 0.0, so ``or`` must NOT be
+        # used here — it would silently turn 0 into 1.
+        raw_mask_strength = getattr(request, "mask_strength", None)
+        mask_strength_value = 1.0 if raw_mask_strength is None else float(raw_mask_strength)
+
         # Reference Image: Native Control/Ref (-r / --control-image / --control-net) vs Classic Noise Img2Img (-i + --strength)
         if getattr(request, "init_image_path", None):
             ref_path = Path(request.init_image_path)
@@ -712,41 +771,12 @@ class SDCppWorker:
                     if cand_cn.exists():
                         cn_path = cand_cn
 
-                crop_ctx = None
-                mask_path_obj = Path(request.mask_image_path) if getattr(request, "mask_image_path", None) else None
-                if mask_path_obj and not mask_path_obj.is_absolute():
-                    mask_path_obj = settings.output_dir / mask_path_obj
-                has_mask = mask_path_obj and mask_path_obj.exists()
-
-                if has_mask and ref_path and ref_path.exists():
-                    inpaint_mode = getattr(request, "inpaint_mode", "masked_only") or "masked_only"
-                    crop_win = int(getattr(request, "crop_window_size", 768) or 768)
-                    if inpaint_mode == "masked_only" or max(width, height) > 1024:
-                        from .inpaint_stitch import prepare_inpaint_crop
-                        uploads_dir = settings.output_dir / "uploads"
-                        crop_ctx = prepare_inpaint_crop(
-                            orig_image_path=ref_path,
-                            mask_image_path=mask_path_obj,
-                            uploads_dir=uploads_dir,
-                            target_size=crop_win,
-                        )
-                        if crop_ctx:
-                            ref_path = crop_ctx.crop_img_path
-                            mask_path_obj = crop_ctx.crop_mask_path
-                            width = crop_ctx.w_out
-                            height = crop_ctx.h_out
-
-                if has_mask:
-                    # Inpaint mode: pass -i, --mask, --strength and optional mask_blur
-                    cmd.extend(["-i", str(ref_path), "--mask", str(mask_path_obj)])
-                    cmd.extend(["--strength", str(round(strength, 2))])
-                    mask_blur_val = int(getattr(request, "mask_blur", 0) or 0)
-                    if mask_blur_val > 0:
-                        if "--model-args" in cmd:
-                            idx = cmd.index("--model-args")
-                            cmd[idx + 1] += f",mask_blur={mask_blur_val}"
-                        else:
-                            cmd.extend(["--model-args", f"mask_blur={mask_blur_val}"])
+                if mask_ctx is not None:
+                    # Masked img2img: SD.CPP only honours --mask together with
+                    # --init-img.  mask_strength maps to the denoising strength.
+                    cmd.extend(["-i", str(ref_path)])
+                    cmd.extend(["--strength", str(round(max(0.01, min(1.0, mask_strength_value)), 2))])
+                    cmd.extend(["--mask", str(mask_ctx["file"])])
                 elif ref_mode == "img2img":
                     # Classic noise-based Img2Img (--init-img + --strength)
                     cmd.extend(["-i", str(ref_path)])
@@ -851,14 +881,6 @@ class SDCppWorker:
 
         # Flash Attention for diffusion model
         cmd.append("--diffusion-fa")
-
-        # CPU offload for Text Encoder on GPUs with <= 12GB VRAM (e.g. RTX 3070 Ti 8GB)
-        gpu_vram = gpu_info.vram_mb if gpu_info else 8192
-        if gpu_vram <= 12288 or getattr(request, "offload_te_cpu", False):
-            cmd.extend(["--backend", "te=cpu"])
-        if gpu_vram <= 12288:
-            cmd.append("--vae-tiling")
-            cmd.extend(["--params-backend", "cpu"])
 
         # Sampling method & Noise / Eta
         noise_val = float(getattr(request, "noise", 0.0) or 0.0)
@@ -974,15 +996,6 @@ class SDCppWorker:
             proc.wait()
         finally:
             self._current_process = None
-            if getattr(request, "mask_image_path", None):
-                try:
-                    m_path = Path(request.mask_image_path)
-                    if not m_path.is_absolute():
-                        m_path = settings.output_dir / m_path
-                    if m_path.exists():
-                        m_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
 
         if proc.returncode != 0:
             tail = "\n".join(captured_lines[-20:]) if captured_lines else "(no output)"
@@ -998,18 +1011,37 @@ class SDCppWorker:
                 f"--- Engine output (last 20 lines) ---\n{tail}"
             )
 
-        # Seamlessly stitch inpaint crop back into master full-resolution image
-        if 'crop_ctx' in locals() and crop_ctx:
+        # ----- Mask compositing (guaranteed preservation) -----
+        # result = generated * mask + original * (1 - mask), at the ORIGINAL
+        # resolution.  The raw engine output is kept as the Inpaint fragment.
+        raw_fragment_rel = None
+        if mask_ctx is not None:
+            from PIL import Image
+            from .masking import composite_with_mask
+
             try:
-                from .inpaint_stitch import stitch_inpaint_result
-                stitch_inpaint_result(
-                    crop_ctx=crop_ctx,
-                    generated_image_path=output_path,
-                    mask_blur=int(getattr(request, "mask_blur", 4) or 4),
+                with Image.open(output_path) as gen_file:
+                    generated_rgb = gen_file.convert("RGB")
+                source_image = mask_ctx["source_image"]
+                composite = composite_with_mask(
+                    generated_rgb, source_image, mask_ctx["array"]
                 )
-                width, height = crop_ctx.orig_size
-            except Exception as stitch_err:
-                logger.warning(f"[sd_cpp] Failed to stitch inpaint crop: {stitch_err}")
+                composite.save(output_path, format="PNG")
+
+                frag_dir = settings.output_dir / "masks"
+                frag_dir.mkdir(parents=True, exist_ok=True)
+                frag_path = frag_dir / f"{output_path.stem}_raw.png"
+                generated_rgb.resize(source_image.size, Image.LANCZOS).save(
+                    frag_path, format="PNG"
+                )
+                raw_fragment_rel = f"masks/{frag_path.name}"
+                logger.info(
+                    "[sd_cpp] Mask composite applied -> %s (fragment: %s)",
+                    output_path.name,
+                    raw_fragment_rel,
+                )
+            except Exception as comp_err:
+                raise RuntimeError(f"Mask compositing failed: {comp_err}") from comp_err
 
         elapsed = time.time() - start_time
 
@@ -1038,6 +1070,18 @@ class SDCppWorker:
                 "generation_time_sec": round(elapsed, 2),
                 "timestamp": int(time.time()),
             }
+            if mask_ctx is not None:
+                meta.update({
+                    "mask_applied": True,
+                    "mask_strength": mask_strength_value,
+                    "mask_grow": int(getattr(request, "mask_grow", 0) or 0),
+                    "mask_blur": float(getattr(request, "mask_blur", 0.0) or 0.0),
+                    "mask_source": mask_ctx["file"].name,
+                    "mask_raw_fragment": raw_fragment_rel,
+                    "composite": "generated*mask + original*(1-mask)",
+                })
+            else:
+                meta["mask_applied"] = False
             sidecar_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
             logger.warning(f"[sd_cpp] Failed to write sidecar metadata: {e}")
@@ -1046,6 +1090,7 @@ class SDCppWorker:
             status=JobStatus.COMPLETE,
             progress=1.0,
             image_path=str(output_path),
+            raw_image_path=raw_fragment_rel,
             message=f"Done in {elapsed:.1f}s",
         ))
 

@@ -255,7 +255,7 @@ export function onGenerationComplete(status, appRef) {
 
   if (emptyEl) emptyEl.style.display = "none";
   if (wrap) wrap.style.display = "inline-flex";
-  if (previewImg) previewImg.src = url;
+  if (previewImg && !app?.state?.genMask?.enabled) previewImg.src = url;
 
   toast("success", "Изображение готово ✓");
   loadHistory(app);
@@ -304,6 +304,9 @@ export function setImg2ImgRef(path, url, appRef) {
   }
   if (empty) empty.style.display = "none";
   if (container) container.classList.add("has-image");
+  if (app?.state?.genMask?.enabled && app.setGenMaskSource) {
+    app.setGenMaskSource({ path, url, name: path });
+  }
 }
 
 export function clearImg2ImgRef(appRef) {
@@ -319,6 +322,17 @@ export function clearImg2ImgRef(appRef) {
   }
   if (empty) empty.style.display = "flex";
   if (container) container.classList.remove("has-image");
+  if (app?.state?.genMask?.enabled) {
+    if (app.state.currentPreviewUrl && app.state.currentPreviewFilename) {
+      app.setGenMaskSource({
+        path: app.state.currentPreviewFilename,
+        url: app.state.currentPreviewUrl,
+        name: app.state.currentPreviewFilename,
+      });
+    } else {
+      app.clearGenMaskSource?.();
+    }
+  }
 }
 
 export function updateStrengthLabel(val) {

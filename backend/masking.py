@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Union
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 # Maximum size of a decoded mask payload (25 MB, same limit as /api/upload).
 MAX_MASK_BYTES = 25 * 1024 * 1024
@@ -48,18 +48,24 @@ class MaskError(ValueError):
 
 
 # ---------- Engine capability table ----------
-# Only engines that expose a *documented* inpaint mask argument are enabled.
+# Every entry uses the SAME polarity (white = edit, black = preserve):
 #
-#   quantfunc : --mask-image PATH
-#               "Inpaint mask (PNG/JPG; alpha or grayscale; white=inpaint,
-#                black=preserve)"  -> polarity confirmed by the engine --help.
-#   sd_cpp    : --mask PATH exists, but the engine help does not document which
-#               pole means "edit" and the upstream source could not be verified,
-#               so passing a mask there risks inverting the edited region.
-#               Kept disabled until the polarity is confirmed.
+#   quantfunc  : --mask-image PATH
+#                "Inpaint mask (PNG/JPG; alpha or grayscale; white=inpaint,
+#                 black=preserve)"  -> polarity confirmed by the engine --help.
+#   sd_cpp     : --mask PATH
+#                Upstream src/pipeline/image.cpp builds the denoise mask from
+#                the image (1 = denoise/regenerate, 0 = keep init latent), so
+#                white = edit, black = preserve.  The mask is only honoured
+#                together with -i/--init-img.
+#   nunchaku   : Python engine (no CLI flag).  Flux2KleinInpaintPipeline
+#                receives mask_image (white repainted, black preserved).
+#   orbitquant : same Python contract as nunchaku.
 ENGINE_MASK_PARAMS: dict[str, dict] = {
     "quantfunc": {"arg": "--mask-image", "white_is_edit": True, "supports": True},
-    "sd_cpp": {"arg": "--mask", "white_is_edit": None, "supports": False},
+    "sd_cpp": {"arg": "--mask", "white_is_edit": True, "supports": True},
+    "nunchaku": {"arg": None, "white_is_edit": True, "supports": True},
+    "orbitquant": {"arg": None, "white_is_edit": True, "supports": True},
 }
 
 
@@ -72,13 +78,18 @@ def engine_mask_support(engine: Optional[str]) -> bool:
 
 
 def engine_mask_arg(engine: Optional[str]) -> Optional[str]:
-    """CLI flag used to pass a mask to the given engine (None if unsupported)."""
+    """CLI flag used to pass a mask to the given engine (None if unsupported).
+
+    Python engines (nunchaku/orbitquant) support masks but have no CLI flag, so
+    ``None`` is a valid answer even when :func:`engine_mask_support` is True.
+    """
     if not engine:
         return None
     params = ENGINE_MASK_PARAMS.get(str(engine))
     if not params or not params.get("supports"):
         return None
-    return str(params.get("arg") or "")
+    arg = params.get("arg")
+    return str(arg) if arg else None
 
 
 def _decode_data_url(data_url: str) -> bytes:
@@ -211,6 +222,61 @@ def decode_mask_to_float(
         raise MaskError(f"Cannot decode mask image: {exc}") from exc
     finally:
         image.close()
+
+
+def feather_mask(
+    mask: np.ndarray,
+    grow: int = 0,
+    blur: float = 0.0,
+) -> np.ndarray:
+    """Dilate and/or blur a float mask while keeping values in ``[0..1]``.
+
+    ``grow`` is a radius in pixels (square dilation, same spirit as the
+    quantfunc ``--mask-grow`` flag); ``blur`` is a Gaussian sigma in pixels.
+    Engines without native grow/blur arguments (sd.cpp, diffusers inpaint)
+    receive the result of this helper instead.
+    """
+    arr = np.clip(np.asarray(mask, dtype=np.float32), 0.0, 1.0)
+    if arr.ndim != 2 or arr.size == 0:
+        return arr
+
+    grow = max(0, min(128, int(grow or 0)))
+    blur = max(0.0, min(64.0, float(blur or 0.0)))
+
+    if grow > 0:
+        kernel = grow * 2 + 1
+        image = Image.fromarray((arr * 255.0).astype(np.uint8), "L")
+        image = image.filter(ImageFilter.MaxFilter(kernel))
+        arr = np.asarray(image, dtype=np.float32) / 255.0
+
+    if blur > 0.0:
+        image = Image.fromarray((arr * 255.0).astype(np.uint8), "L")
+        image = image.filter(ImageFilter.GaussianBlur(blur))
+        arr = np.asarray(image, dtype=np.float32) / 255.0
+
+    return np.clip(arr, 0.0, 1.0)
+
+
+def prepare_mask_arrays(
+    mask_source: MaskSource,
+    target_size: Tuple[int, int],
+    invert_mask: bool = False,
+    grow: int = 0,
+    blur: float = 0.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Decode a mask and return ``(raw, engine)`` arrays in source coordinates.
+
+    ``raw`` is used for the backend compositing guarantee; ``engine`` is the
+    dilated/blurred version handed to the engine.
+    """
+    raw = decode_mask_to_float(
+        mask_source,
+        target_size=target_size,
+        invert_mask=invert_mask,
+    )
+    if raw is None:
+        raise MaskError("Mask payload is empty")
+    return raw, feather_mask(raw, grow=grow, blur=blur)
 
 
 def encode_mask_png(mask: np.ndarray) -> bytes:
