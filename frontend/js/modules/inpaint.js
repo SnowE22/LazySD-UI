@@ -115,10 +115,79 @@
         app.onInpaintFileUpload({ target: { files: [file] } });
       });
 
-      document.getElementById('inpaint-model-select').innerHTML = document.getElementById('model-select')?.innerHTML || '';
-      document.getElementById('inpaint-model-select').value = document.getElementById('model-select')?.value || '';
-
       if (app.initViewportZoomPan) app.initViewportZoomPan('inpaint', { areaId: 'inpaint-dropzone', wrapId: 'inpaint-preview-wrap', hudId: 'inpaint-zoom-hud', labelId: 'inpaint-zoom-label', scrollXId: 'inpaint-scrollbar-x', thumbXId: 'inpaint-scrollbar-thumb-x', scrollYId: 'inpaint-scrollbar-y', thumbYId: 'inpaint-scrollbar-thumb-y' }, app);
+
+      // Auto-toggle crisp rendering when zooming in
+      window.addEventListener('viewport-transform', (e) => {
+        if (e.detail?.mode === 'inpaint') {
+          const img = document.getElementById('inpaint-preview-img');
+          const canvas = document.getElementById('inpaint-mask-canvas');
+          const zoom = Number(e.detail.zoom) || 1;
+          const isZoomed = zoom >= 1.05;
+          if (img) img.classList.toggle('crisp-zoom', isZoomed);
+          if (canvas) canvas.classList.toggle('crisp-zoom', isZoomed);
+        }
+      });
+
+      // Synchronize inpaint inspector with main generator state
+      app.syncInpaintInspector();
+    },
+
+    syncInpaintInspector() {
+      if (app.updateModelTrigger) app.updateModelTrigger();
+
+      const mainVariant = document.getElementById('variant-select');
+      const inpaintVariant = document.getElementById('inpaint-variant-select');
+      if (mainVariant && inpaintVariant) {
+        inpaintVariant.innerHTML = mainVariant.innerHTML;
+        inpaintVariant.value = mainVariant.value;
+        inpaintVariant.onchange = () => {
+          mainVariant.value = inpaintVariant.value;
+          mainVariant.dispatchEvent(new Event('change'));
+        };
+      }
+
+      const mainTe = document.getElementById('text-encoder-select');
+      const inpaintTe = document.getElementById('inpaint-text-encoder-select');
+      if (mainTe && inpaintTe) {
+        inpaintTe.innerHTML = mainTe.innerHTML;
+        inpaintTe.value = mainTe.value;
+        inpaintTe.onchange = () => {
+          mainTe.value = inpaintTe.value;
+          if (app.onTextEncoderChange) app.onTextEncoderChange();
+        };
+      }
+
+      const mainVae = document.getElementById('vae-select');
+      const inpaintVae = document.getElementById('inpaint-vae-select');
+      if (mainVae && inpaintVae) {
+        inpaintVae.innerHTML = mainVae.innerHTML;
+        inpaintVae.value = mainVae.value;
+        inpaintVae.onchange = () => {
+          mainVae.value = inpaintVae.value;
+          if (app.onVaeChange) app.onVaeChange();
+        };
+      }
+
+      const mainLoraCount = document.getElementById('inspector-lora-count');
+      const inpaintLoraCount = document.getElementById('inpaint-lora-count');
+      const mainLoraList = document.getElementById('lora-inspector-list');
+      const inpaintLoraList = document.getElementById('inpaint-lora-list');
+      if (mainLoraCount && inpaintLoraCount) inpaintLoraCount.textContent = mainLoraCount.textContent;
+      if (mainLoraList && inpaintLoraList) inpaintLoraList.innerHTML = mainLoraList.innerHTML;
+    },
+
+    toggleInpaintSharpness() {
+      const img = document.getElementById('inpaint-preview-img');
+      const canvas = document.getElementById('inpaint-mask-canvas');
+      const btn = document.getElementById('inpaint-sharp-btn');
+      const label = document.getElementById('inpaint-sharp-label');
+      if (!img) return;
+      const isSharp = img.classList.toggle('inpaint-sharp');
+      if (canvas) canvas.classList.toggle('inpaint-sharp', isSharp);
+      if (btn) btn.classList.toggle('active', isSharp);
+      if (label) label.textContent = isSharp ? 'Резко (Вкл)' : 'Чётко';
+      (window.toast || app.toast)('info', isSharp ? 'Пиксельная чёткость включена (без размытия при зуме)' : 'Автоматическое сглаживание');
     },
 
     setInpaintTool(tool) {
@@ -224,7 +293,8 @@
       const cfg_scale = parseFloat(document.getElementById('inpaint-cfg')?.value) || st.cfgScale;
       const seedVal = document.getElementById('inpaint-seed')?.value?.trim();
       const seed = (seedVal && seedVal !== '-1' && !isNaN(parseInt(seedVal, 10))) ? parseInt(seedVal, 10) : null;
-      const model = document.getElementById('inpaint-model-select')?.value || app.state.selectedModel;
+      const model = app.state.selectedModel || document.getElementById('inpaint-model-select')?.value;
+      const variant = document.getElementById('inpaint-variant-select')?.value || app.state.selectedVariant;
 
       const canvas = getCanvas();
       const maskDataUrl = canvas ? canvas.toDataURL('image/png') : '';
@@ -245,10 +315,12 @@
           prompt,
           negative_prompt,
           model,
+          variant,
           strength,
           steps,
           cfg_scale,
-          seed
+          seed,
+          loras: app.state.loras || []
         });
 
         const jobId = res?.job_id;

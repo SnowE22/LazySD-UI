@@ -4269,6 +4269,7 @@
           <span class="studio-meta-pill" id="inpaint-meta-info">—</span>
         </div>
         <div class="studio-toolbar-right">
+          <button type="button" class="studio-btn" id="inpaint-sharp-btn" onclick="App.toggleInpaintSharpness()" title="Чёткость при зуме (Pixel-sharp)">🔬 <span id="inpaint-sharp-label">Чётко</span></button>
           <button type="button" class="studio-btn" id="inpaint-compare-btn" onclick="App.toggleInpaintCompare()" title="Показать оригинал / результат">↔ <span data-i18n="halftone.compare_hold">До / После</span></button>
           <button type="button" class="studio-btn" onclick="App.downloadInpaintPng()">⬇ <span data-i18n="halftone.download_png">Скачать PNG</span></button>
         </div>
@@ -4303,59 +4304,144 @@
     </div>
 
     <!-- Right Inspector Controls -->
-    <aside class="studio-inspector">
-      <div class="studio-inspector-scroll">
-        <div class="studio-card">
-          <div class="studio-card-title" data-i18n="inpaint.settings_title">Параметры инпейнтинга</div>
-          <div class="studio-control-row" style="margin-bottom: 12px;">
-            <label class="studio-control-label" data-i18n="controls.model">Модель</label>
-            <select id="inpaint-model-select" class="studio-select" style="width: 100%;"></select>
+    <!-- RIGHT SIDEBAR: INPAINT TOPAZ-STYLE INSPECTOR -->
+<aside class="topaz-inspector" id="inpaint-inspector">
+  <div class="inspector-header">
+    <span class="inspector-title" data-i18n="inspector.title">🎛️ Инспектор параметров</span>
+    <button type="button" class="icon-btn" onclick="App.toggleInspector()" data-i18n-title="inspector.collapse" title="Свернуть инспектор" style="width: 24px; height: 24px; font-size: 12px;">✕</button>
+  </div>
+
+  <div class="inspector-scroll">
+    <!-- Accordion 1: Model & Backend -->
+    <details class="inspector-accordion" open>
+      <summary class="inspector-summary">
+        <span data-i18n="inspector.section.model_backend">📦 Модель и бэкенд</span>
+      </summary>
+      <div class="inspector-section-body controls-row">
+        <div class="control-group" style="width: 100%;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <label data-i18n="controls.model">Модель</label>
+            <a href="javascript:void(0)" onclick="App.openCustomModelModal()" class="inspector-add-link" data-i18n="inspector.add_model">+ Добавить модель</a>
           </div>
-          <div class="studio-control-row" style="margin-bottom: 12px;">
-            <label class="studio-control-label" data-i18n="inpaint.prompt">Промпт</label>
-            <textarea id="inpaint-prompt" class="studio-textarea" rows="3" placeholder="Что должно быть на месте маски..." style="width: 100%; resize: vertical;"></textarea>
+          <div class="model-picker-trigger-wrap">
+            <button type="button" class="model-picker-trigger" id="inpaint-model-picker-trigger" onclick="App.openModelPickerModal()">
+              <div class="model-trigger-info">
+                <span class="model-trigger-name" id="inpaint-model-trigger-name">—</span>
+                <span class="model-trigger-sub" id="inpaint-model-trigger-sub">—</span>
+              </div>
+              <span class="model-trigger-badge" id="inpaint-model-trigger-badge">⚡ SD.CPP</span>
+            </button>
           </div>
-          <div class="studio-control-row" style="margin-bottom: 12px;">
-            <label class="studio-control-label" data-i18n="inpaint.negative_prompt">Негативный промпт</label>
-            <textarea id="inpaint-negative-prompt" class="studio-textarea" rows="2" placeholder="Что исключить..." style="width: 100%; resize: vertical;"></textarea>
+          <select id="inpaint-model-select" style="display: none;"></select>
+        </div>
+
+        <div class="control-group" id="inpaint-backend-group" style="width: 100%;">
+          <label id="inpaint-backend-label" data-i18n="controls.variant_backend">Квантование / Бэкенд</label>
+          <select id="inpaint-variant-select"></select>
+        </div>
+
+        <div class="control-group" id="inpaint-text-encoder-group" style="width: 100%;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <label data-i18n="controls.text_encoder">Текстовый энкодер</label>
+            <a href="javascript:void(0)" style="font-size: 11px; color: var(--accent); text-decoration: none;" onclick="App.toggleCustomTeInput(event)" data-i18n="controls.custom_path">Свой путь</a>
           </div>
-          <div class="studio-control-row" style="margin-bottom: 10px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <label class="studio-control-label" style="margin: 0;" data-i18n="inpaint.strength">Сила изменения (Denoise)</label>
-              <span id="inpaint-strength-val" style="font-size: 11px; font-weight: 600; color: var(--text-dim);">0.75</span>
-            </div>
-            <input type="range" id="inpaint-strength" min="0.05" max="1.0" step="0.05" value="0.75" oninput="document.getElementById('inpaint-strength-val').textContent = this.value" style="width: 100%;">
+          <select id="inpaint-text-encoder-select"></select>
+        </div>
+
+        <div class="control-group" id="inpaint-vae-group" style="width: 100%;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <label data-i18n="controls.vae">VAE</label>
+            <a href="javascript:void(0)" style="font-size: 11px; color: var(--accent); text-decoration: none;" onclick="App.toggleCustomVaeInput(event)" data-i18n="controls.custom_path">Свой путь</a>
           </div>
-          <div class="studio-control-row" style="margin-bottom: 10px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <label class="studio-control-label" style="margin: 0;" data-i18n="inpaint.mask_blur">Размытие краёв (Mask Blur)</label>
-              <span id="inpaint-mask-blur-val" style="font-size: 11px; font-weight: 600; color: var(--text-dim);">4 px</span>
-            </div>
-            <input type="range" id="inpaint-mask-blur" min="0" max="64" step="1" value="4" oninput="document.getElementById('inpaint-mask-blur-val').textContent = this.value + ' px'" style="width: 100%;">
-          </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;">
-            <div class="studio-control-row">
-              <label class="studio-control-label" data-i18n="controls.steps">Шаги (Steps)</label>
-              <input type="number" id="inpaint-steps" min="1" max="50" value="20" class="studio-input" style="width: 100%;">
-            </div>
-            <div class="studio-control-row">
-              <label class="studio-control-label" data-i18n="controls.cfg">CFG Scale</label>
-              <input type="number" id="inpaint-cfg" min="1.0" max="20.0" step="0.5" value="7.0" class="studio-input" style="width: 100%;">
-            </div>
-          </div>
-          <div class="studio-control-row" style="margin-bottom: 16px;">
-            <label class="studio-control-label" data-i18n="controls.seed">Seed (-1 = случайный)</label>
-            <div style="display: flex; gap: 6px;">
-              <input type="text" id="inpaint-seed" value="-1" class="studio-input" style="flex: 1;">
-              <button type="button" class="studio-mini-btn" onclick="document.getElementById('inpaint-seed').value = '-1'" title="Случайный">🎲</button>
-            </div>
-          </div>
-          <button type="button" class="studio-btn primary" id="inpaint-generate-btn" onclick="App.runInpaint()" style="width: 100%; padding: 12px; font-size: 14px; font-weight: 600; justify-content: center;">
-            🎨 <span data-i18n="inpaint.generate_btn">Сгенерировать Inpaint</span>
-          </button>
+          <select id="inpaint-vae-select"></select>
         </div>
       </div>
-    </aside>
+    </details>
+
+    <!-- Accordion 2: LoRA Stacking -->
+    <details class="inspector-accordion" id="inpaint-lora-accordion">
+      <summary class="inspector-summary">
+        <span data-i18n="inspector.section.lora_prefix">🎨 LoRA-стекинг</span> (<span id="inpaint-lora-count">0</span>)
+      </summary>
+      <div class="inspector-section-body">
+        <div class="lora-inspector-wrap" id="inpaint-lora-list">
+          <div style="font-size: 11px; color: var(--text-dim); text-align: center; padding: 6px 0;" data-i18n="inspector.no_loras">Нет подключенных LoRA</div>
+        </div>
+        <div style="display: flex; gap: 6px; margin-top: 8px;">
+          <button type="button" class="dock-mini-btn accent" onclick="App.openLoraModal()" style="width: 100%; justify-content: center; height: 30px;" data-i18n="inspector.manage_loras">+ Управление LoRA</button>
+        </div>
+      </div>
+    </details>
+
+    <!-- Accordion 3: Inpaint Parameters -->
+    <details class="inspector-accordion" open id="inpaint-params-accordion">
+      <summary class="inspector-summary">
+        <span data-i18n="inpaint.title">🎨 Параметры Inpaint</span>
+      </summary>
+      <div class="inspector-section-body">
+        <div class="control-group" style="width: 100%;">
+          <label data-i18n="inpaint.prompt">Промпт</label>
+          <textarea id="inpaint-prompt" class="studio-textarea" rows="3" placeholder="Что должно быть на месте маски..." style="width: 100%; resize: vertical;"></textarea>
+        </div>
+        <div class="control-group" style="width: 100%;">
+          <label data-i18n="inpaint.negative_prompt">Негативный промпт</label>
+          <textarea id="inpaint-negative-prompt" class="studio-textarea" rows="2" placeholder="Что исключить..." style="width: 100%; resize: vertical;"></textarea>
+        </div>
+        <div class="control-group" style="width: 100%;">
+          <div class="control-label-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <label style="margin: 0;" data-i18n="inpaint.strength">Сила изменения (Denoise)</label>
+            <span id="inpaint-strength-val" style="font-size: 11px; font-weight: 600; color: var(--text-dim);">0.75</span>
+          </div>
+          <div class="slider-input-row" style="display: flex; gap: 8px; align-items: center;">
+            <input type="range" id="inpaint-strength" min="0.05" max="1.0" step="0.05" value="0.75" oninput="document.getElementById('inpaint-strength-val').textContent = this.value" style="flex: 1;">
+          </div>
+        </div>
+        <div class="control-group" style="width: 100%;">
+          <div class="control-label-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <label style="margin: 0;" data-i18n="inpaint.mask_blur">Размытие краёв (Mask Blur)</label>
+            <span id="inpaint-mask-blur-val" style="font-size: 11px; font-weight: 600; color: var(--text-dim);">4 px</span>
+          </div>
+          <div class="slider-input-row" style="display: flex; gap: 8px; align-items: center;">
+            <input type="range" id="inpaint-mask-blur" min="0" max="64" step="1" value="4" oninput="document.getElementById('inpaint-mask-blur-val').textContent = this.value + ' px'" style="flex: 1;">
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Accordion 4: Generation Settings -->
+    <details class="inspector-accordion" open>
+      <summary class="inspector-summary">
+        <span data-i18n="inspector.section.generation">⚙️ Параметры генерации</span>
+      </summary>
+      <div class="inspector-section-body">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%;">
+          <div class="control-group" style="min-width: 0;">
+            <label data-i18n="controls.steps">Шаги (Steps)</label>
+            <input type="number" id="inpaint-steps" value="20" min="1" max="50">
+          </div>
+          <div class="control-group" style="min-width: 0;">
+            <label data-i18n="controls.cfg">CFG</label>
+            <input type="number" id="inpaint-cfg" value="7.0" min="1.0" max="20.0" step="0.5">
+          </div>
+        </div>
+        <div class="control-group" style="width: 100%; margin-top: 8px;">
+          <label data-i18n="controls.seed">Сид (Seed)</label>
+          <div style="display: flex; gap: 6px;">
+            <input type="text" id="inpaint-seed" value="-1" style="flex: 1;">
+            <button type="button" class="icon-btn" onclick="document.getElementById('inpaint-seed').value='-1';" data-i18n-title="inspector.seed_reset" title="Сбросить на случайный сид">🎲</button>
+          </div>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Generate Button Fixed at Bottom -->
+  <div style="padding: 12px; border-top: 1px solid var(--border); background: var(--bg-secondary); flex-shrink: 0;">
+    <button type="button" class="btn primary" id="inpaint-generate-btn" onclick="App.runInpaint()" style="width: 100%; height: 42px; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px;">
+      🎨 <span data-i18n="inpaint.generate_btn">Сгенерировать Inpaint</span>
+    </button>
+  </div>
+</aside>
   </div>
 </section>
 

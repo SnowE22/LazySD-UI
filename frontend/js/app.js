@@ -179,13 +179,16 @@ const App = {
   },
 
   toggleInspector() {
-    const inspector = document.getElementById("topaz-inspector");
+    const isTabInpaint = (this.state.currentTab === "inpaint");
+    const inspector = isTabInpaint
+      ? document.getElementById("inpaint-inspector")
+      : document.getElementById("topaz-inspector");
     const btn = document.getElementById("inspector-toggle-btn");
     if (!inspector) return;
     const isCollapsed = inspector.classList.toggle("collapsed");
     if (btn) btn.classList.toggle("active", !isCollapsed);
     try {
-      localStorage.setItem("lazysd_inspector_collapsed", isCollapsed ? "1" : "0");
+      localStorage.setItem(isTabInpaint ? "lazysd_inpaint_inspector_collapsed" : "lazysd_inspector_collapsed", isCollapsed ? "1" : "0");
     } catch (_) {}
   },
 
@@ -765,6 +768,14 @@ const App = {
         badgeEl.textContent = current.engine_version ? `⚡ v${current.engine_version}` : "⚡";
       }
     }
+
+    // Mirror to inpaint inspector
+    const inpaintNameEl = document.getElementById("inpaint-model-trigger-name");
+    const inpaintSubEl = document.getElementById("inpaint-model-trigger-sub");
+    const inpaintBadgeEl = document.getElementById("inpaint-model-trigger-badge");
+    if (inpaintNameEl && nameEl) inpaintNameEl.textContent = nameEl.textContent;
+    if (inpaintSubEl && subEl) inpaintSubEl.innerHTML = subEl.innerHTML;
+    if (inpaintBadgeEl && badgeEl) inpaintBadgeEl.textContent = badgeEl.textContent;
 
     // Dynamic CFG & Noise recommendations
     let recCfg = 1.0;
@@ -1898,6 +1909,17 @@ const App = {
       this.initMangaStudio();
     } else if (tabName === "inpaint") {
       if (this.initInpaintStudio) this.initInpaintStudio();
+      const inpaintInsp = document.getElementById("inpaint-inspector");
+      const btn = document.getElementById("inspector-toggle-btn");
+      if (btn && inpaintInsp) {
+        btn.classList.toggle("active", !inpaintInsp.classList.contains("collapsed"));
+      }
+    } else if (tabName === "generate" || tabName === "img2img") {
+      const topInsp = document.getElementById("topaz-inspector");
+      const btn = document.getElementById("inspector-toggle-btn");
+      if (btn && topInsp) {
+        btn.classList.toggle("active", !topInsp.classList.contains("collapsed"));
+      }
     }
   },
 

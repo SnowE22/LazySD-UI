@@ -4202,6 +4202,24 @@ body:not(.role-guest) #guest-mode-banner {
 #ht-preview-img.ht-pixelated {
   image-rendering: pixelated;
 }
+
+/* Inpaint Preview Crisp Zoom & High Quality */
+#inpaint-preview-wrap {
+  will-change: auto !important;
+}
+#inpaint-preview-img {
+  z-index: 1;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: high-quality;
+}
+#inpaint-preview-img.crisp-zoom,
+#inpaint-preview-img.inpaint-sharp {
+  image-rendering: pixelated !important;
+}
+#inpaint-mask-canvas.crisp-zoom,
+#inpaint-mask-canvas.inpaint-sharp {
+  image-rendering: pixelated !important;
+}
 .ht-roi-img {
   position: absolute;
   z-index: 3;
