@@ -155,6 +155,32 @@ def test_generate_sends_the_mask_to_the_backend():
     assert "supports_mask" in GENERATOR_JS, "Generate must pre-flight the mask capability"
 
 
+def test_generate_mask_uses_the_active_reference_image():
+    assert "this.state.img2imgRef" in APP_JS
+    assert "reference?.url || this.state.currentPreviewUrl" in APP_JS
+    assert "reference?.url || app.state.currentPreviewUrl" in GEN_MASK_JS
+    assert "params.init_image_path = state.source.path" in GEN_MASK_JS
+    assert "app.setGenMaskSource({ path, url, name: path })" in GENERATOR_JS
+
+
+def test_inpaint_upload_drag_drop_and_clear_controls_are_wired():
+    for marker in (
+        'id="inpaint-canvas-actions"',
+        'id="inpaint-clear-source"',
+        'id="inpaint-drop-overlay"',
+        "inpaint.action.upload",
+        "inpaint.action.clear",
+    ):
+        assert marker in INDEX_HTML or marker in (FRONTEND / "locale" / "ru.json").read_text(encoding="utf-8")
+    assert "async apiUpload(file)" in APP_JS
+    assert "const res = await this._fetchWithRetry(\"/api/upload\"" in APP_JS
+    assert 'addEventListener("drop"' in APP_JS
+    assert 'addEventListener("dragover"' in APP_JS
+    assert "clearInpaintSource()" in APP_JS
+    assert "export function clearInpaintSource" in INPAINT_JS
+    assert "apiUpload(file)" in INPAINT_JS
+
+
 def test_locales_contain_the_mask_and_inpaint_keys():
     import json
 
@@ -179,6 +205,10 @@ def test_locales_contain_the_mask_and_inpaint_keys():
             "inpaint.layers.title",
             "inpaint.layers.opacity",
             "inpaint.hint.model_unsupported",
+            "inpaint.action.upload",
+            "inpaint.action.clear",
+            "inpaint.action.clear_title",
+            "inpaint.drop_here",
         ):
             assert key in data, f"{name} is missing {key}"
 
@@ -341,4 +371,19 @@ def test_models_endpoint_exposes_the_mask_capability():
     by_id = {m["id"]: m for m in models}
     assert "supports_mask" in by_id["qwen_image_edit"]
     assert by_id["qwen_image_edit"]["supports_mask"] is True
+    # QF FLUX cards stay untouched.
     assert by_id["flux_klein_4b"]["supports_mask"] is False
+    assert by_id["flux_klein_9b"]["supports_mask"] is False
+    # Nunchaku / OrbitQuant / SD.CPP FLUX cards opt in.
+    for model_id in (
+        "flux_2_klein_4b_nunchaku",
+        "flux_2_klein_4b_orbitquant",
+        "flux_2_klein_9b_nunchaku",
+        "flux_2_klein_9b_kv_nunchaku",
+        "flux_2_klein_9b_orbitquant",
+        "flux_2_klein_base_9b_gguf",
+        "flux_3_image_klein_gguf",
+        "flux_schnell_gguf",
+    ):
+        assert by_id[model_id]["supports_mask"] is True, model_id
+    assert by_id["flux_3_image_klein_nunchaku"]["supports_mask"] is False

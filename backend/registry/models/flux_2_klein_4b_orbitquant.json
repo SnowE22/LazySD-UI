@@ -3,6 +3,7 @@
   "name": "Flux.2 Klein 4B (OrbitQuant W4A4)",
   "family": "klein",
   "pipeline": "text_to_image",
+  "supports_mask": true,
   "engine": "orbitquant",
   "engine_version": "orbitquant",
   "key_protected": false,

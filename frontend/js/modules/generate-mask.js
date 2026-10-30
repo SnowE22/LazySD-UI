@@ -177,9 +177,23 @@ export function setGenMaskSource(appRef, source) {
     applyLoadedSource();
   }
 
-  app.state.currentPreviewUrl = source.url;
-  app.state.currentPreviewFilename = source.path || source.url.split("/").pop();
+  updateGenMaskPanel(app);
+  syncGenMaskGeometry(app);
+}
 
+export function clearGenMaskSource(appRef = null) {
+  const app = appRef || window.App;
+  const state = getGenMaskState(app);
+  if (!app || !state) return;
+  state.sourceLoadSeq = (state.sourceLoadSeq || 0) + 1;
+  state.source = null;
+  state.surface?.reset(1024, 1024);
+  const img = previewImage();
+  const placeholder = document.getElementById("preview-placeholder");
+  const wrap = document.getElementById("preview-image-wrap");
+  if (img) img.removeAttribute("src");
+  if (wrap) wrap.style.display = "none";
+  if (placeholder) placeholder.style.display = "flex";
   updateGenMaskPanel(app);
   syncGenMaskGeometry(app);
 }
@@ -208,13 +222,26 @@ export function toggleGenMask(appRef = null) {
 
   if (state.enabled) {
     state.enabled = false;
+    const img = previewImage();
+    const placeholder = document.getElementById("preview-placeholder");
+    const wrap = document.getElementById("preview-image-wrap");
+    if (app.state.currentPreviewUrl) {
+      if (img) img.src = app.state.currentPreviewUrl;
+      if (wrap) wrap.style.display = "flex";
+      if (placeholder) placeholder.style.display = "none";
+    } else {
+      if (img) img.removeAttribute("src");
+      if (wrap) wrap.style.display = "none";
+      if (placeholder) placeholder.style.display = "flex";
+    }
     updateGenMaskPanel(app);
     return;
   }
 
-  const currentUrl = app.state.currentPreviewUrl;
-  const currentName = app.state.currentPreviewFilename;
-  if (!currentUrl) {
+  const reference = app.state.img2imgRef;
+  const currentUrl = reference?.url || app.state.currentPreviewUrl;
+  const currentName = reference?.path || app.state.currentPreviewFilename;
+  if (!currentUrl || !currentName) {
     // No image yet: open the panel with the hint so the user can pick one.
     state.enabled = true;
     updateGenMaskPanel(app);
@@ -222,16 +249,12 @@ export function toggleGenMask(appRef = null) {
     return;
   }
 
-  ensureSurface(app);
-  state.enabled = true;
-  state.source = {
+  setGenMaskSource(app, {
     url: currentUrl,
     path: currentName,
-    name: currentName || currentUrl.split("/").pop(),
-    width: previewImage()?.naturalWidth || 1024,
-    height: previewImage()?.naturalHeight || 1024,
-  };
-  resizeMaskToSource(app);
+    name: reference?.filename || currentName,
+  });
+  state.enabled = true;
   updateGenMaskPanel(app);
   syncGenMaskGeometry(app);
 }
@@ -242,6 +265,14 @@ export function enableGenMaskWithSource(appRef, source) {
   const state = getGenMaskState(app);
   if (!app || !state) return;
   setGenMaskSource(app, source);
+  if (source?.path && source?.url) {
+    app.state.img2imgRef = {
+      path: source.path,
+      url: source.url,
+      filename: source.name || source.path,
+    };
+    app.updateNewDock?.(app);
+  }
   state.enabled = true;
   resizeMaskToSource(app);
   updateGenMaskPanel(app);

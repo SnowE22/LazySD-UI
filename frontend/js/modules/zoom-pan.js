@@ -135,6 +135,7 @@ export function initViewportZoomPan(mode, cfg, appRef = null) {
       e.target.closest(".preview-toolbar") ||
       e.target.closest(".mask-fab") ||
       e.target.closest(".mask-panel") ||
+      e.target.closest(".inpaint-canvas-actions") ||
       e.target.closest(".compare-slider-bar")
     ) {
       return;

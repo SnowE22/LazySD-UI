@@ -264,6 +264,16 @@ const App = {
     return res.json();
   },
 
+  async apiUpload(file) {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await this._fetchWithRetry("/api/upload", {
+      method: "POST",
+      body: formData,
+    }, 0);
+    return res.json();
+  },
+
   async apiPatch(path, body) {
     const res = await fetch(path, {
       method: "PATCH",
@@ -1750,7 +1760,7 @@ const App = {
       e.preventDefault();
     }, false);
     window.addEventListener("drop", (e) => {
-      if (!e.target.closest("#tab-generate") && !e.target.closest("#ht-dropzone") && !e.target.closest("#manga-dropzone")) {
+      if (!e.target.closest("#tab-generate") && !e.target.closest("#ht-dropzone") && !e.target.closest("#manga-dropzone") && !e.target.closest("#inpaint-canvas-area")) {
         e.preventDefault();
       }
     }, false);
@@ -2888,7 +2898,7 @@ const App = {
       }
       const filename = imagePath.split(/[\/\\]/).pop();
       const url = `/outputs/${encodeURIComponent(filename)}?t=${Date.now()}`;
-      img.src = url;
+      if (!this.state.genMask?.enabled) img.src = url;
       this.state.currentPreviewFilename = filename;
       this.state.currentPreviewUrl = url;
       this.state.lastPreviewName = filename;
@@ -3742,6 +3752,13 @@ const App = {
       if (container) container.style.display = "none";
     }
     this.updateNewDock?.(this);
+    if (this.state.genMask?.enabled && refData?.url) {
+      this.setGenMaskSource({
+        url: refData.url,
+        path: refData.path,
+        name: refData.filename || refData.path,
+      });
+    }
   },
 
   clearImg2ImgRef() {
@@ -3749,6 +3766,17 @@ const App = {
     const container = document.getElementById("img2img-container");
     if (container) container.style.display = "none";
     this.updateNewDock?.(this);
+    if (this.state.genMask?.enabled) {
+      if (this.state.currentPreviewUrl && this.state.currentPreviewFilename) {
+        this.setGenMaskSource({
+          url: this.state.currentPreviewUrl,
+          path: this.state.currentPreviewFilename,
+          name: this.state.currentPreviewFilename,
+        });
+      } else {
+        this.clearGenMaskSource();
+      }
+    }
   },
 
   updateStrengthLabel(val) {
@@ -6826,6 +6854,7 @@ function initViewportZoomPan(mode, cfg, appRef = null) {
       e.target.closest(".preview-toolbar") ||
       e.target.closest(".mask-fab") ||
       e.target.closest(".mask-panel") ||
+      e.target.closest(".inpaint-canvas-actions") ||
       e.target.closest(".compare-slider-bar")
     ) {
       return;
@@ -11531,9 +11560,22 @@ Object.assign(App, {
       applyLoadedSource();
     }
 
-    this.state.currentPreviewUrl = source.url;
-    this.state.currentPreviewFilename = source.path || source.url.split("/").pop();
+    this.updateGenMaskPanel();
+    this.syncGenMaskGeometry();
+  },
 
+  clearGenMaskSource() {
+    const state = this.getGenMaskState();
+    if (!state) return;
+    state.sourceLoadSeq = (state.sourceLoadSeq || 0) + 1;
+    state.source = null;
+    if (state.surface) state.surface.reset(1024, 1024);
+    const img = this.getGenMaskPreviewImage();
+    const placeholder = document.getElementById("preview-placeholder");
+    const wrap = document.getElementById("preview-image-wrap");
+    if (img) img.removeAttribute("src");
+    if (wrap) wrap.style.display = "none";
+    if (placeholder) placeholder.style.display = "flex";
     this.updateGenMaskPanel();
     this.syncGenMaskGeometry();
   },
@@ -11559,6 +11601,13 @@ Object.assign(App, {
     const state = app.getGenMaskState();
     if (!state) return;
     app.setGenMaskSource(source);
+    if (source?.path && source?.url) {
+      app.setImg2ImgRef({
+        path: source.path,
+        url: source.url,
+        filename: source.name || source.path,
+      });
+    }
     state.enabled = true;
     app.resizeGenMaskToSource();
     app.updateGenMaskPanel();
@@ -11571,29 +11620,38 @@ Object.assign(App, {
 
     if (state.enabled) {
       state.enabled = false;
+      const img = this.getGenMaskPreviewImage();
+      const placeholder = document.getElementById("preview-placeholder");
+      const wrap = document.getElementById("preview-image-wrap");
+      if (this.state.currentPreviewUrl) {
+        if (img) img.src = this.state.currentPreviewUrl;
+        if (wrap) wrap.style.display = "flex";
+        if (placeholder) placeholder.style.display = "none";
+      } else {
+        if (img) img.removeAttribute("src");
+        if (wrap) wrap.style.display = "none";
+        if (placeholder) placeholder.style.display = "flex";
+      }
       this.updateGenMaskPanel();
       return;
     }
 
-    const currentUrl = this.state.currentPreviewUrl;
-    const currentName = this.state.currentPreviewFilename;
-    if (!currentUrl) {
+    const reference = this.state.img2imgRef;
+    const currentUrl = reference?.url || this.state.currentPreviewUrl;
+    const currentName = reference?.path || this.state.currentPreviewFilename;
+    if (!currentUrl || !currentName) {
       state.enabled = true;
       this.updateGenMaskPanel();
       this.toast("warning", this.maskT("generate.mask.hint_load", "Загрузите изображение, чтобы рисовать маску"));
       return;
     }
 
-    this.ensureGenMaskSurface();
-    state.enabled = true;
-    state.source = {
+    this.setGenMaskSource({
       url: currentUrl,
       path: currentName,
-      name: currentName || currentUrl.split("/").pop(),
-      width: this.getGenMaskPreviewImage()?.naturalWidth || 1024,
-      height: this.getGenMaskPreviewImage()?.naturalHeight || 1024,
-    };
-    this.resizeGenMaskToSource();
+      name: reference?.filename || currentName,
+    });
+    state.enabled = true;
     this.updateGenMaskPanel();
     this.syncGenMaskGeometry();
   },
@@ -12053,7 +12111,7 @@ Object.assign(App, {
   async loadInpaintSource(url, path, name, appRef) {
     const app = appRef || this;
     const state = app.getInpaintState();
-    if (!state) return;
+    if (!state) return false;
 
     const loadSeq = (state.sourceLoadSeq || 0) + 1;
     state.sourceLoadSeq = loadSeq;
@@ -12066,11 +12124,11 @@ Object.assign(App, {
         img.src = url;
       });
     } catch (err) {
-      this.toast("error", err.message || "Не удалось загрузить изображение");
-      return;
+      app.toast("error", err.message || "Не удалось загрузить изображение");
+      return false;
     }
 
-    if (state.sourceLoadSeq !== loadSeq || !img.complete || !img.naturalWidth) return;
+    if (state.sourceLoadSeq !== loadSeq || !img.complete || !img.naturalWidth) return false;
 
     state.source = {
       token: loadSeq,
@@ -12109,6 +12167,32 @@ Object.assign(App, {
 
     this.refreshInpaintMaskLayerViews();
     this.renderInpaintComposite();
+    this.renderInpaintLayersUI();
+    this.updateInpaintStatus();
+    this.syncInpaintGeometry();
+    return true;
+  },
+
+  clearInpaintSource() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    state.sourceLoadSeq = (state.sourceLoadSeq || 0) + 1;
+    state.source = null;
+    state.layers = [];
+    state.activeLayerId = null;
+    state.history.length = 0;
+    state.future.length = 0;
+    state.jobContext = null;
+
+    const stack = this.getInpaintMaskStack();
+    if (stack) stack.replaceChildren();
+    const canvas = this.getInpaintCompositeCanvas();
+    if (canvas) {
+      canvas.width = 1024;
+      canvas.height = 1024;
+      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+    }
+
     this.renderInpaintLayersUI();
     this.updateInpaintStatus();
     this.syncInpaintGeometry();
@@ -12398,9 +12482,11 @@ Object.assign(App, {
     if (!state) return;
     const statusEl = document.getElementById("inpaint-status");
     const hintEl = document.getElementById("inpaint-empty-hint");
+    const clearBtn = document.getElementById("inpaint-clear-source");
     const layer = this.getInpaintActiveMaskLayer();
 
     if (hintEl) hintEl.style.display = state.source ? "none" : "flex";
+    if (clearBtn) clearBtn.disabled = !state.source;
 
     if (!statusEl) return;
     if (!state.source) {
@@ -12769,10 +12855,20 @@ Object.assign(App, {
 
   async uploadInpaintFile(file) {
     if (!file) return;
+    const allowed = ["image/png", "image/jpeg", "image/webp"];
+    const extension = file.name?.split(".").pop()?.toLowerCase();
+    if (!allowed.includes(file.type) && !["png", "jpg", "jpeg", "webp"].includes(extension)) {
+      this.toast("error", "Поддерживаются только PNG, JPEG и WebP");
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      this.toast("error", "Размер файла не должен превышать 25 МБ");
+      return;
+    }
     try {
       const data = await this.apiUpload(file);
-      await this.loadInpaintSource(data.url, data.path, file.name || data.path);
-      this.toast("success", this.maskT("inpaint.hint.loaded", "Изображение загружено"));
+      const loaded = await this.loadInpaintSource(data.url, data.path, file.name || data.path);
+      if (loaded) this.toast("success", this.maskT("inpaint.hint.loaded", "Изображение загружено"));
     } catch (e) {
       this.toast("error", e.message || "Ошибка загрузки");
     }
@@ -12805,6 +12901,42 @@ Object.assign(App, {
         const file = event.target.files?.[0];
         if (file) this.uploadInpaintFile(file);
         event.target.value = "";
+      });
+    }
+
+    const canvasArea = document.getElementById("inpaint-canvas-area");
+    if (canvasArea && !canvasArea.dataset.dropBound) {
+      canvasArea.dataset.dropBound = "1";
+      let dragDepth = 0;
+      canvasArea.addEventListener("dragenter", (event) => {
+        if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+        event.preventDefault();
+        dragDepth += 1;
+        canvasArea.classList.add("drag-over");
+      });
+      canvasArea.addEventListener("dragover", (event) => {
+        if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      });
+      canvasArea.addEventListener("dragleave", (event) => {
+        if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+        event.preventDefault();
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (!dragDepth) canvasArea.classList.remove("drag-over");
+      });
+      canvasArea.addEventListener("drop", (event) => {
+        if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dragDepth = 0;
+        canvasArea.classList.remove("drag-over");
+        const file = Array.from(event.dataTransfer.files || []).find((item) =>
+          ["image/png", "image/jpeg", "image/webp"].includes(item.type)
+          || /\.(png|jpe?g|webp)$/i.test(item.name || "")
+        );
+        if (file) this.uploadInpaintFile(file);
+        else this.toast("error", "Перетащите изображение PNG, JPEG или WebP");
       });
     }
 

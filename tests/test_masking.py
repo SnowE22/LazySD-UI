@@ -24,8 +24,10 @@ from backend.masking import (  # noqa: E402
     encode_mask_png,
     engine_mask_arg,
     engine_mask_support,
+    feather_mask,
     is_mask_empty,
     mask_coverage,
+    prepare_mask_arrays,
 )
 
 
@@ -181,14 +183,19 @@ def test_encode_mask_png_roundtrip():
 
 
 def test_engine_mask_support_table():
-    """Only engines with a documented mask argument may be used."""
+    """Engines with a confirmed mask contract may be used."""
     assert engine_mask_support("quantfunc") is True
     assert engine_mask_arg("quantfunc") == "--mask-image"
-    # sd.cpp exposes --mask but its polarity is not documented -> disabled.
-    assert engine_mask_support("sd_cpp") is False
-    assert engine_mask_arg("sd_cpp") is None
-    for engine in ("sdnq", "nunchaku", "orbitquant", ""):
+    assert engine_mask_support("sd_cpp") is True
+    assert engine_mask_arg("sd_cpp") == "--mask"
+    # Python engines take mask_image directly and have no CLI flag.
+    for engine in ("nunchaku", "orbitquant"):
+        assert engine_mask_support(engine) is True
+        assert engine_mask_arg(engine) is None
+    for engine in ("sdnq", ""):
         assert engine_mask_support(engine) is False
+        assert engine_mask_arg(engine) is None
+    assert engine_mask_support(None) is False
 
 
 def test_model_supports_mask():
@@ -198,13 +205,29 @@ def test_model_supports_mask():
     qwen_edit = registry.get("qwen_image_edit")
     assert model_supports_mask(qwen_edit) is True, "Qwen-Image-Edit must be mask capable"
 
-    plain = None
-    for spec in registry.list_all():
-        if spec.id != "qwen_image_edit":
-            plain = spec
-            break
-    assert plain is not None
-    assert model_supports_mask(plain) is False, "text_to_image models must not accept masks"
+    # QuantFunc FLUX cards stay untouched: QF masking is intentionally off.
+    for model_id in ("flux_klein_4b", "flux_klein_9b"):
+        spec = registry.get(model_id)
+        assert spec is not None
+        assert model_supports_mask(spec) is False, f"{model_id} must stay non-maskable"
+
+    # FLUX.2 Klein Nunchaku / OrbitQuant and SD.CPP cards opt in explicitly.
+    for model_id in (
+        "flux_2_klein_4b_nunchaku",
+        "flux_2_klein_4b_orbitquant",
+        "flux_2_klein_9b_nunchaku",
+        "flux_2_klein_9b_kv_nunchaku",
+        "flux_2_klein_9b_orbitquant",
+        "flux_2_klein_base_9b_gguf",
+        "flux_3_image_klein_gguf",
+        "flux_schnell_gguf",
+    ):
+        spec = registry.get(model_id)
+        assert spec is not None, f"{model_id} must be registered"
+        assert model_supports_mask(spec) is True, f"{model_id} must accept masks"
+
+    # FLUX.3 Nunchaku uses a ModularPipeline without inpaint wiring.
+    assert model_supports_mask(registry.get("flux_3_image_klein_nunchaku")) is False
 
     assert model_supports_mask(None) is False
 
@@ -214,10 +237,73 @@ def test_registry_mask_capable_listing():
 
     registry = get_registry()
     capable = registry.list_mask_capable()
+    capable_ids = {spec.id for spec in capable}
     assert capable, "at least one mask capable model must be registered"
+    assert "qwen_image_edit" in capable_ids
+    for model_id in (
+        "flux_2_klein_4b_nunchaku",
+        "flux_2_klein_4b_orbitquant",
+        "flux_2_klein_9b_nunchaku",
+        "flux_2_klein_9b_kv_nunchaku",
+        "flux_2_klein_9b_orbitquant",
+        "flux_2_klein_base_9b_gguf",
+        "flux_3_image_klein_gguf",
+        "flux_schnell_gguf",
+    ):
+        assert model_id in capable_ids
+    for model_id in ("flux_klein_4b", "flux_klein_9b", "flux_3_image_klein_nunchaku"):
+        assert model_id not in capable_ids
     for spec in capable:
         assert spec.supports_mask is True
-        assert spec.engine == "quantfunc"
+        assert engine_mask_support(spec.engine) is True
+
+
+def test_feather_mask_dilates_and_keeps_background_zero():
+    mask = np.zeros((32, 32), dtype=np.float32)
+    mask[14:18, 14:18] = 1.0
+
+    grown = feather_mask(mask, grow=3)
+    assert grown[12, 12] > 0.99, "dilation must expand the painted region"
+    assert grown[0, 0] == 0.0, "background must stay untouched"
+
+    blurred = feather_mask(mask, blur=2.0)
+    assert blurred[16, 16] > 0.0
+    assert blurred[0, 0] == 0.0
+    assert float(blurred.max()) <= 1.0
+
+
+def test_prepare_mask_arrays_returns_raw_and_engine_versions():
+    raw, engine = prepare_mask_arrays(
+        _png_data_url(_rgba_mask(painted=True)),
+        target_size=(64, 64),
+        grow=2,
+        blur=1.0,
+    )
+    assert raw.shape == (64, 64)
+    assert engine.shape == (64, 64)
+    assert raw[32, 32] > 0.99
+    assert engine[32, 32] > 0.99
+    assert raw[0, 0] == 0.0
+    assert engine[0, 0] == 0.0
+    assert mask_coverage(engine) >= mask_coverage(raw), "grow must not shrink coverage"
+
+
+def test_workers_wire_the_mask_into_the_engine():
+    """The engine adapters must actually forward the prepared mask."""
+    extras_src = (root_dir / "backend" / "extras.py").read_text(encoding="utf-8")
+    sd_cpp_src = (root_dir / "backend" / "sd_cpp.py").read_text(encoding="utf-8")
+
+    assert "Flux2KleinInpaintPipeline" in extras_src
+    assert 'call_kwargs["mask_image"]' in extras_src
+    assert '"mask_path"' in extras_src
+    assert "prepare_mask_arrays" in extras_src
+    # mask_strength == 0.0 must survive the payload round-trip.
+    assert "mask_strength_value" in extras_src
+
+    assert "prepare_mask_arrays" in sd_cpp_src
+    assert 'cmd.extend(["--mask"' in sd_cpp_src
+    assert 'cmd.extend(["--strength"' in sd_cpp_src
+    assert "mask_strength_value" in sd_cpp_src
 
 
 def test_custom_model_card_can_declare_mask_support():

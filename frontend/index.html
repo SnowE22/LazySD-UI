@@ -10,7 +10,7 @@
 
   <title>LazySD UI</title>
 
-  <link rel="stylesheet" href="/css/styles.css?v=20261030_01">
+  <link rel="stylesheet" href="/css/styles.css?v=20261030_02">
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%237C3AED'/%3E%3Ctext x='12' y='17' text-anchor='middle' fill='white' font-size='14' font-weight='bold' font-family='Arial'%3EL%3C/text%3E%3C/svg%3E">
 
@@ -1360,6 +1360,12 @@
       <section class="tab-panel inpaint-workspace" id="tab-inpaint" style="display: none;">
 
         <div class="inpaint-canvas-area" id="inpaint-canvas-area">
+
+          <div class="inpaint-canvas-actions" id="inpaint-canvas-actions">
+            <button type="button" class="inpaint-canvas-action" onclick="document.getElementById('inpaint-file-input').click()" data-i18n="inpaint.action.upload">Загрузить</button>
+            <button type="button" class="inpaint-canvas-action danger" id="inpaint-clear-source" onclick="App.clearInpaintSource()" data-i18n-title="inpaint.action.clear_title" title="Очистить холст" disabled>✕ <span data-i18n="inpaint.action.clear">Очистить холст</span></button>
+          </div>
+          <div class="inpaint-drop-overlay" id="inpaint-drop-overlay" data-i18n="inpaint.drop_here">Отпустите файл, чтобы загрузить изображение</div>
 
           <div class="inpaint-canvas-wrap" id="inpaint-canvas-wrap">
 
@@ -4491,7 +4497,7 @@
 
   <script src="/js/dropzone.js?v=20261022_01"></script>
 
-  <script src="/js/app.js?v=20261030_06"></script>
+  <script src="/js/app.js?v=20261030_07"></script>
 
   <script>
 
