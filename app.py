@@ -294,6 +294,7 @@ from backend.generation_queue import GenerationQueue
 from backend.history_paging import paginate
 from backend.presence import get_presence
 from backend.registry import get_registry
+from backend.registry.loader import model_supports_mask
 
 
 
@@ -472,6 +473,7 @@ class AppState:
                 "step": event.step,
                 "total_steps": event.total_steps,
                 "image_path": event.image_path,
+                "raw_image_path": getattr(event, "raw_image_path", None),
                 "error": event.error,
             })
             if event.status in (JobStatus.COMPLETE, JobStatus.ERROR, JobStatus.CANCELLED):
@@ -2296,6 +2298,7 @@ def create_app() -> FastAPI:
 
 
                 "pipeline": m.pipeline,
+                "supports_mask": model_supports_mask(m),
 
 
 
@@ -3452,6 +3455,7 @@ def create_app() -> FastAPI:
 
 
                 "pipeline": m.pipeline,
+                "supports_mask": model_supports_mask(m),
 
 
 
@@ -8489,6 +8493,35 @@ def create_app() -> FastAPI:
             inpaint_mode = str(body.get('inpaint_mode', 'masked_only'))
             crop_window_size = int(body.get('crop_window_size', 768))
 
+            mask_present = "mask" in body or "mask_path" in body
+            raw_mask = body.get("mask")
+            raw_mask_path = body.get("mask_path")
+            if mask_present:
+                if "mask" in body and "mask_path" in body:
+                    raise ValueError("Provide either mask or mask_path, not both")
+                if "mask" in body and (
+                    not isinstance(raw_mask, str)
+                    or not raw_mask.startswith("data:image/")
+                ):
+                    raise ValueError("mask must be a non-empty image data URL")
+                if "mask_path" in body and (
+                    not isinstance(raw_mask_path, str) or not raw_mask_path.strip()
+                ):
+                    raise ValueError("mask_path must be a non-empty path")
+
+            mask_data_url = raw_mask if mask_present and "mask" in body else None
+
+            mask_strength = float(body.get("mask_strength", 1.0))
+
+            mask_grow = int(body.get("mask_grow", 6))
+
+            mask_blur = float(body.get("mask_blur", 0.0))
+
+            raw_mask_invert = body.get("mask_invert", False)
+            if mask_present and not isinstance(raw_mask_invert, bool):
+                raise ValueError("mask_invert must be a boolean")
+            mask_invert = raw_mask_invert if mask_present else bool(raw_mask_invert)
+
 
 
         except (KeyError, TypeError, ValueError) as e:
@@ -8763,6 +8796,57 @@ def create_app() -> FastAPI:
 
 
 
+        # ----- Mask (inpaint) validation -----
+        # The mask capability is checked BEFORE the job starts, so the user gets
+        # a clear error (plus the list of compatible models) instead of a silent
+        # full-image generation.
+        mask_requested = mask_present
+        if mask_requested:
+            if not init_image_path:
+                raise HTTPException(400, "Mask editing requires a source image. Load an image (gallery / upload / current canvas) first.")
+            if not model_supports_mask(model):
+                compatible = [m for m in registry.list_all() if model_supports_mask(m)]
+                compatible_names = ", ".join(f"{m.name} ({m.id})" for m in compatible) or "none available yet"
+                raise HTTPException(400, detail={
+                    "error": "mask_unsupported",
+                    "message": f"Model '{model.name}' does not support inpaint masks. Switch to a mask-capable model: {compatible_names}.",
+                    "model_id": model.id,
+                    "compatible_models": [
+                        {"id": m.id, "name": m.name, "engine": getattr(m, "engine", "quantfunc")}
+                        for m in compatible
+                    ],
+                })
+            try:
+                import math
+                from backend.masking import MaskError, decode_mask_to_float, is_mask_empty
+                from backend.security import validate_path
+
+                if not all(math.isfinite(value) for value in (mask_strength, mask_blur)):
+                    raise ValueError("Mask parameters must be finite numbers")
+                if not 0.0 <= mask_strength <= 1.0:
+                    raise ValueError("mask_strength must be between 0 and 1")
+                if not 0.0 <= mask_blur <= 64.0:
+                    raise ValueError("mask_blur must be between 0 and 64")
+                if not 0 <= mask_grow <= 128:
+                    raise ValueError("mask_grow must be between 0 and 128")
+
+                mask_source = mask_data_url
+                if raw_mask_path is not None:
+                    validated_mask_path = validate_path(
+                        raw_mask_path,
+                        base_dir=Path(get_settings().output_dir),
+                        must_exist=True,
+                    )
+                    raw_mask_path = str(validated_mask_path)
+                    mask_source = validated_mask_path
+                decoded_mask = decode_mask_to_float(
+                    mask_source,
+                    invert_mask=mask_invert,
+                )
+                if is_mask_empty(decoded_mask, threshold=0.0):
+                    raise ValueError("Mask is empty")
+            except (MaskError, ValueError, OSError) as exc:
+                raise HTTPException(400, f"Invalid mask: {exc}") from exc
         if model.pipeline == "image_edit" and not init_image_path:
 
 
@@ -9068,6 +9152,12 @@ def create_app() -> FastAPI:
 
 
             init_image_strength=init_image_strength,
+            mask_data_url=mask_data_url,
+            mask_path=Path(str(raw_mask_path)) if raw_mask_path else None,
+            mask_strength=mask_strength,
+            mask_grow=mask_grow,
+            mask_blur=mask_blur,
+            mask_invert=mask_invert,
 
 
 
@@ -14515,6 +14605,4 @@ if __name__ == "__main__":
 
 
     main()
-
-
 

@@ -64,6 +64,7 @@ class ProgressEvent:
     downloaded_bytes: Optional[int] = None
     total_bytes: Optional[int] = None
     image_path: Optional[str] = None  # Final image path (when complete)
+    raw_image_path: Optional[str] = None  # Raw engine output (before mask compositing)
     error: Optional[str] = None       # Error message (when error)
 
 
@@ -84,10 +85,16 @@ class GenerateRequest:
     use_prequant: bool = False
     init_image_path: Optional[Path] = None  # For img2img / image edit
     init_image_strength: float = 0.7
-    mask_image_path: Optional[Path] = None  # For inpainting
-    mask_blur: int = 4
-    inpaint_mode: str = 'masked_only'  # 'masked_only' | 'whole_image'
-    crop_window_size: int = 768
+
+    # ---- Mask / inpaint -------------------------------------------------
+    # Mask semantics: white = regenerate, black = keep, grey = soft blend.
+    # The mask may be sent as a PNG data URL (browser) or as a file path.
+    mask_data_url: Optional[str] = None
+    mask_path: Optional[Path] = None
+    mask_strength: float = 1.0           # multiplies the mask (0 disables inpaint)
+    mask_grow: int = 6                   # dilation in px (ComfyUI VAEEncodeForInpaint)
+    mask_blur: float = 0.0               # gaussian blur sigma in px
+    mask_invert: bool = False            # swap black/white before use
     lora_paths: list[Path] = field(default_factory=list)
     lora_strengths: list[float] = field(default_factory=list)
     output_filename: Optional[str] = None
@@ -764,6 +771,17 @@ class Worker:
 
         # Output path
         settings = get_settings()
+
+        # ----- Phase 3.5: Mask (inpaint) preparation -----
+        # The mask is decoded here so that both the engine argument and the
+        # final compositing use exactly the same coverage values.
+        mask_ctx = None
+        raw_mask_source = request.mask_data_url or (
+            str(request.mask_path) if request.mask_path else None
+        )
+        if raw_mask_source:
+            mask_ctx = self._prepare_mask(request, settings, raw_mask_source)
+
         if request.output_filename:
             from .security import validate_filename
             validate_filename(request.output_filename)
@@ -891,6 +909,31 @@ class Worker:
                 "--ref-image", str(resolved_init),
                 "--edit-strength", str(strength),
             ])
+
+        # ----- Mask (inpaint) engine arguments -----
+        if mask_ctx is not None:
+            from .masking import engine_mask_arg
+            from .security import validate_float as _validate_float
+
+            mask_arg = engine_mask_arg("quantfunc")
+            if not mask_arg:
+                raise RuntimeError(
+                    "The selected engine does not support inpaint masks. "
+                    "Choose a mask-capable model or generate without a mask."
+                )
+            mask_strength = _validate_float(request.mask_strength, "mask_strength", min_val=0.0, max_val=1.0)
+            mask_grow = max(0, min(64, int(request.mask_grow or 0)))
+            mask_blur = _validate_float(request.mask_blur, "mask_blur", min_val=0.0, max_val=64.0)
+            args.extend([mask_arg, str(mask_ctx["file"])])
+            args.extend(["--mask-strength", str(mask_strength)])
+            args.extend(["--mask-grow", str(mask_grow)])
+            if mask_blur > 0:
+                args.extend(["--mask-blur", str(mask_blur)])
+            print(
+                "[worker] Inpaint mask: %s (%sx%s), strength=%.2f grow=%d blur=%.1f",
+                mask_ctx["file"].name, mask_ctx["source_size"][0], mask_ctx["source_size"][1],
+                mask_strength, mask_grow, mask_blur,
+            )
 
         # QuantFunc API key — user key from Settings takes precedence.
         # Without it, key-protected models fail at engine checkObfuscation.
@@ -1036,6 +1079,35 @@ class Worker:
             cm = CacheManager()
             final_path = cm.save_output(output_path)
 
+        # ----- Phase 7.5: Mask compositing (guaranteed preservation) -----
+        # result = generated * mask + original * (1 - mask)
+        # The composite is produced at the ORIGINAL resolution, so every pixel
+        # outside the mask stays bit-identical to the source image. The raw
+        # engine output is kept next to it for the Inpaint "Result" layer.
+        raw_fragment_rel = None
+        if mask_ctx is not None:
+            from PIL import Image
+            from .masking import composite_with_mask
+
+            try:
+                with Image.open(final_path) as gen_file:
+                    generated_rgb = gen_file.convert("RGB")
+                source_image = mask_ctx["source_image"]
+                composite = composite_with_mask(
+                    generated_rgb, source_image, mask_ctx["array"]
+                )
+                composite.save(final_path, format="PNG")
+
+                frag_dir = settings.output_dir / "masks"
+                frag_dir.mkdir(parents=True, exist_ok=True)
+                frag_path = frag_dir / f"{final_path.stem}_raw.png"
+                generated_rgb.resize(source_image.size, Image.LANCZOS).save(frag_path, format="PNG")
+                raw_fragment_rel = f"masks/{frag_path.name}"
+                print(f"[worker] Mask composite applied -> {final_path.name} (fragment: {raw_fragment_rel})")
+            except Exception as comp_err:
+                print(f"[worker] Mask compositing failed: {comp_err}")
+                raise RuntimeError(f"Mask compositing failed: {comp_err}") from comp_err
+
         # Write JSON sidecar with generation metadata
         json_sidecar = final_path.with_suffix(".json")
         try:
@@ -1060,6 +1132,18 @@ class Worker:
                 "generation_time_sec": round(elapsed, 2),
                 "timestamp": int(time.time()),
             }
+            if mask_ctx is not None:
+                meta.update({
+                    "mask_applied": True,
+                    "mask_strength": float(request.mask_strength),
+                    "mask_grow": int(request.mask_grow or 0),
+                    "mask_blur": float(request.mask_blur or 0.0),
+                    "mask_source": str(mask_ctx["source_path"].name),
+                    "mask_raw_fragment": raw_fragment_rel,
+                    "composite": "generated*mask + original*(1-mask)",
+                })
+            else:
+                meta["mask_applied"] = False
             json_sidecar.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as meta_err:
             print(f"[worker] Failed to write sidecar metadata {json_sidecar}: {meta_err}")
@@ -1068,6 +1152,7 @@ class Worker:
             status=JobStatus.COMPLETE,
             progress=1.0,
             image_path=str(final_path),
+            raw_image_path=raw_fragment_rel,
             message=f"Done in {elapsed:.1f}s",
         ))
 
@@ -1104,6 +1189,68 @@ class Worker:
                 self._current_process.terminate()
             except Exception:
                 pass
+
+    # ---------- Mask (inpaint) ----------
+    def _prepare_mask(self, request: GenerateRequest, settings, raw_source: str) -> dict:
+        """Decode the incoming mask and persist it as a PNG for the engine.
+
+        The decoded coverage array lives in SOURCE IMAGE coordinates, so it is
+        used both for the engine argument and for the final compositing.
+        """
+        from PIL import Image
+        from .masking import (
+            MaskError,
+            decode_mask_to_float,
+            mask_file_name,
+            save_mask_file,
+        )
+
+        if not request.init_image_path:
+            raise ValueError(
+                "Mask editing requires a source image (init_image_path is missing)"
+            )
+
+        source_path = validate_path(
+            str(request.init_image_path),
+            base_dir=settings.output_dir,
+            must_exist=True,
+        )
+        with Image.open(source_path) as src_file:
+            source_image = src_file.copy()
+
+        if request.mask_path:
+            mask_path = validate_path(
+                str(request.mask_path),
+                base_dir=settings.output_dir,
+                must_exist=True,
+            )
+            raw_source = str(mask_path)
+        source_size = source_image.size
+
+        try:
+            mask_array = decode_mask_to_float(
+                raw_source,
+                target_size=source_size,
+                invert_mask=bool(request.mask_invert),
+            )
+        except MaskError as exc:
+            raise ValueError(str(exc)) from exc
+
+        if mask_array is None:
+            raise ValueError("Mask payload is empty")
+
+        mask_file = save_mask_file(
+            mask_array,
+            settings.output_dir / "masks",
+            mask_file_name("inpaint"),
+        )
+        return {
+            "array": mask_array,
+            "file": mask_file,
+            "source_path": source_path,
+            "source_size": source_size,
+            "source_image": source_image,
+        }
 
     def _compute_vram_budget(self, gpu_info: GPUInfo, model: ModelSpec) -> int:
         """Compute --vram-budget value in MB based on settings + GPU."""

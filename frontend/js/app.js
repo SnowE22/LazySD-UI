@@ -106,6 +106,8 @@ const App = {
     account: null,
     guestAccounts: [],
     historyFilter: "all",
+    genMask: null,
+    inpaint: null,
   },
 
   // ---------- 3-Tier Model Sorting ----------
@@ -156,6 +158,8 @@ const App = {
     try { this.bindEvents(); } catch (e) { console.warn("[init] bindEvents error:", e); }
     try { this.initAllViewportZoomPan(); } catch (e) { console.warn("[init] initAllViewportZoomPan error:", e); }
     try { this.initViewportHudOpacity(); } catch (e) { console.warn("[init] initViewportHudOpacity error:", e); }
+    try { this.initGenMaskUI(); } catch (e) { console.warn("[init] initGenMaskUI error:", e); }
+    try { this.initInpaintStudio(); } catch (e) { console.warn("[init] initInpaintStudio error:", e); }
 
     console.log("[app] Ready. GPU:", this.state.gpuInfo?.name || "not detected");
   },
@@ -179,16 +183,13 @@ const App = {
   },
 
   toggleInspector() {
-    const isTabInpaint = (this.state.currentTab === "inpaint");
-    const inspector = isTabInpaint
-      ? document.getElementById("inpaint-inspector")
-      : document.getElementById("topaz-inspector");
+    const inspector = document.getElementById("topaz-inspector");
     const btn = document.getElementById("inspector-toggle-btn");
     if (!inspector) return;
     const isCollapsed = inspector.classList.toggle("collapsed");
     if (btn) btn.classList.toggle("active", !isCollapsed);
     try {
-      localStorage.setItem(isTabInpaint ? "lazysd_inpaint_inspector_collapsed" : "lazysd_inspector_collapsed", isCollapsed ? "1" : "0");
+      localStorage.setItem("lazysd_inspector_collapsed", isCollapsed ? "1" : "0");
     } catch (_) {}
   },
 
@@ -708,11 +709,9 @@ const App = {
       select.appendChild(opt);
     }
 
-    // Auto-select saved model from localStorage or preserve existing selection
-    const savedModelId = localStorage.getItem("lazysd_selected_model");
-    const savedModel = savedModelId && compatible.find(m => m.id === savedModelId && !m.disabled);
+    // Auto-select first non-disabled model (or preserve existing selection)
     const existing = this.state.selectedModel && compatible.find(m => m.id === this.state.selectedModel && !m.disabled);
-    const firstActive = savedModel || existing || compatible.find(m => !m.disabled) || compatible[0];
+    const firstActive = existing || compatible.find(m => !m.disabled) || compatible[0];
     if (firstActive) {
       select.value = firstActive.id;
       this.state.selectedModel = firstActive.id;
@@ -770,14 +769,6 @@ const App = {
         badgeEl.textContent = current.engine_version ? `⚡ v${current.engine_version}` : "⚡";
       }
     }
-
-    // Mirror to inpaint inspector
-    const inpaintNameEl = document.getElementById("inpaint-model-trigger-name");
-    const inpaintSubEl = document.getElementById("inpaint-model-trigger-sub");
-    const inpaintBadgeEl = document.getElementById("inpaint-model-trigger-badge");
-    if (inpaintNameEl && nameEl) inpaintNameEl.textContent = nameEl.textContent;
-    if (inpaintSubEl && subEl) inpaintSubEl.innerHTML = subEl.innerHTML;
-    if (inpaintBadgeEl && badgeEl) inpaintBadgeEl.textContent = badgeEl.textContent;
 
     // Dynamic CFG & Noise recommendations
     let recCfg = 1.0;
@@ -1027,14 +1018,13 @@ const App = {
     }
 
     this.state.selectedModel = modelId;
-    localStorage.setItem("lazysd_selected_model", modelId);
 
     const select = document.getElementById("model-select");
     if (select) {
       select.value = modelId;
     }
 
-    if (this.state.currentTab !== "generate" && this.state.currentTab !== "inpaint") {
+    if (this.state.currentTab !== "generate") {
       this.switchTab("generate");
     }
 
@@ -1896,7 +1886,8 @@ const App = {
     // Show selected panel
     const activePanel = document.getElementById(targetId);
     if (activePanel) {
-      activePanel.style.display = (targetId === "tab-generate") ? "flex" : "block";
+      const flexPanels = ["tab-generate", "tab-inpaint"];
+      activePanel.style.display = flexPanels.includes(targetId) ? "flex" : "block";
     }
 
     // Auto-load history, models, or templates tab
@@ -1911,18 +1902,7 @@ const App = {
     } else if (tabName === "manga") {
       this.initMangaStudio();
     } else if (tabName === "inpaint") {
-      if (this.initInpaintStudio) this.initInpaintStudio();
-      const inpaintInsp = document.getElementById("inpaint-inspector");
-      const btn = document.getElementById("inspector-toggle-btn");
-      if (btn && inpaintInsp) {
-        btn.classList.toggle("active", !inpaintInsp.classList.contains("collapsed"));
-      }
-    } else if (tabName === "generate" || tabName === "img2img") {
-      const topInsp = document.getElementById("topaz-inspector");
-      const btn = document.getElementById("inspector-toggle-btn");
-      if (btn && topInsp) {
-        btn.classList.toggle("active", !topInsp.classList.contains("collapsed"));
-      }
+      this.initInpaintStudio();
     }
   },
 
@@ -2631,6 +2611,28 @@ const App = {
           }
         }
       }
+    }
+
+    // Mask editing (Generate): the mask defines the edited region, everything
+    // outside of it is restored by the backend compositor.
+    const maskStatus = this.applyGenMaskParams(params);
+    if (maskStatus === "empty") {
+      this.toast("warning", this.maskT("generate.mask.empty_block", "Маска пуста — нарисуйте область или отключите режим «Маска»"));
+      return;
+    }
+    if (maskStatus === "ok") {
+      const maskModel = (this.state.models || []).find((m) => m.id === params.model_id);
+      if (maskModel && !maskModel.supports_mask) {
+        const capable = this.getMaskCapableModels();
+        const names = capable.map((m) => m.name).join(", ") || this.maskT("generate.mask.no_capable", "нет в наличии");
+        this.toast("error", this.maskT(
+          "generate.mask.model_unsupported",
+          `Модель «${maskModel.name}» не поддерживает маску. Поддерживают: ${names}`,
+          { name: maskModel.name, list: names }
+        ));
+        return;
+      }
+      params.init_image_strength = 1.0;
     }
 
     // Disable button + show progress
@@ -6736,6 +6738,13 @@ function initAllViewportZoomPan(appRef = null) {
     thumbYId: "manga-scrollbar-thumb-y",
   }, appRef);
 
+  initViewportZoomPan("inpaint", {
+    areaId: "inpaint-canvas-area",
+    wrapId: "inpaint-canvas-wrap",
+    hudId: "inpaint-zoom-hud",
+    labelId: "inpaint-zoom-label",
+  }, appRef);
+
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
       spacePressed = true;
@@ -6806,18 +6815,23 @@ function initViewportZoomPan(mode, cfg, appRef = null) {
   let isZoomToolClick = false;
 
   area.addEventListener("pointerdown", (e) => {
+    // The inpaint mask canvas handles its own pointer events (painting).
+    if (e.button === 0 && e.target.closest?.(".inpaint-mask-canvas")) {
+      return;
+    }
     if (
       e.target.closest(".viewport-zoom-hud") ||
       e.target.closest(".viewport-scrollbar-x") ||
       e.target.closest(".viewport-scrollbar-y") ||
       e.target.closest(".preview-toolbar") ||
+      e.target.closest(".mask-fab") ||
+      e.target.closest(".mask-panel") ||
       e.target.closest(".compare-slider-bar")
     ) {
       return;
     }
 
     const htTool = (appRef?.state?.halftone?.tool || window.App?.state?.halftone?.tool) || "view";
-    const inpaintTool = (appRef?.state?.inpaint?.tool || window.App?.state?.inpaint?.tool) || "view";
     const isMiddle = e.button === 1;
     const isRight = e.button === 2;
     const isLeft = e.button === 0;
@@ -6829,9 +6843,6 @@ function initViewportZoomPan(mode, cfg, appRef = null) {
       isPanning = true;
       isZoomToolClick = false;
     } else if (isLeft && mode === "halftone" && htTool === "view") {
-      isPanning = true;
-      isZoomToolClick = false;
-    } else if (isLeft && mode === "inpaint" && inpaintTool === "view") {
       isPanning = true;
       isZoomToolClick = false;
     } else if (isLeft && (mode === "manga" || mode === "generate")) {
@@ -10081,9 +10092,13 @@ function openGalleryPicker(targetTool = "halftone", appRef) {
   if (!modal || !grid) return;
 
   if (title) {
-    title.textContent = targetTool === "halftone"
-      ? "Выберите изображение для Halftone Studio GT"
-      : "Выберите изображение для Manga Screen AI";
+    const titles = {
+      halftone: "Выберите изображение для Halftone Studio GT",
+      manga: "Выберите изображение для Manga Screen AI",
+      generate: "Выберите изображение для редактирования по маске",
+      inpaint: "Выберите изображение для Inpaint",
+    };
+    title.textContent = titles[targetTool] || titles.halftone;
   }
 
   const items = app?.state?.historyItems || [];
@@ -10094,7 +10109,7 @@ function openGalleryPicker(targetTool = "halftone", appRef) {
       const thumbUrl = it.thumb_url || it.image_url || it.url;
       const fullUrl = it.image_url || it.url || thumbUrl;
       return `
-        <div class="gallery-picker-item" onclick="App.selectGalleryPickerItem('${escapeHtml(fullUrl)}', '${escapeHtml(it.filename || '')}')" style="cursor: pointer; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); aspect-ratio: 1; background: var(--bg-surface); transition: transform 0.15s, border-color 0.15s;">
+        <div class="gallery-picker-item" onclick="App.selectGalleryPickerItem('${escapeHtml(fullUrl)}', '${escapeHtml(it.filename || it.name || '')}')" style="cursor: pointer; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); aspect-ratio: 1; background: var(--bg-surface); transition: transform 0.15s, border-color 0.15s;">
           <img src="${thumbUrl}" alt="History item" style="width: 100%; height: 100%; object-fit: cover; display: block;" loading="lazy">
         </div>
       `;
@@ -10109,6 +10124,23 @@ function closeGalleryPicker() {
   if (modal) modal.style.display = "none";
 }
 
+// Resolve the server side path of a gallery item (relative to the output dir).
+function resolveOutputPath(url, filename) {
+  if (filename) return filename;
+  if (typeof url === "string") {
+    const marker = "/outputs/";
+    const idx = url.indexOf(marker);
+    if (idx >= 0) {
+      try {
+        return decodeURIComponent(url.slice(idx + marker.length).split("?")[0]);
+      } catch (_) {
+        return url.slice(idx + marker.length).split("?")[0];
+      }
+    }
+  }
+  return "";
+}
+
 function selectGalleryPickerItem(url, filename, appRef) {
   closeGalleryPicker();
   const app = appRef || window.App;
@@ -10117,8 +10149,16 @@ function selectGalleryPickerItem(url, filename, appRef) {
     loadHalftoneSource(url, filename || "gallery_item.png", app);
   } else if (target === "manga") {
     if (app.loadMangaSource) app.loadMangaSource(url, filename || "gallery_item.png");
+  } else if (target === "generate") {
+    if (app.enableGenMaskWithSource) {
+      const path = resolveOutputPath(url, filename);
+      app.enableGenMaskWithSource(app, { url, path, name: path || filename || "image.png" });
+    }
   } else if (target === "inpaint") {
-    if (app.loadInpaintSource) app.loadInpaintSource(url, filename || "gallery_item.png");
+    if (app.loadInpaintSource) {
+      const path = resolveOutputPath(url, filename);
+      app.loadInpaintSource(url, path, path || filename || "image.png");
+    }
   }
 }
 
@@ -10134,8 +10174,6 @@ function openHistoryItemInTool(tool, appRef) {
     loadHalftoneSource(url, it.filename || "history_image.png", app);
   } else if (tool === "manga") {
     if (app.loadMangaSource) app.loadMangaSource(url, it.filename || "history_image.png");
-  } else if (tool === "inpaint") {
-    if (app.loadInpaintSource) app.loadInpaintSource(url, it.filename || "history_image.png");
   }
 }
 
@@ -10151,8 +10189,6 @@ function useCanvasImageInTool(tool, appRef) {
     loadHalftoneSource(curImg, "generated_preview.png", app);
   } else if (tool === "manga") {
     if (app.loadMangaSource) app.loadMangaSource(curImg, "generated_preview.png");
-  } else if (tool === "inpaint") {
-    if (app.loadInpaintSource) app.loadInpaintSource(curImg, "generated_preview.png");
   }
 }
 
@@ -11020,6 +11056,1763 @@ Object.assign(App, {
       this.toast("info", checked ? t("settings.dock.hidden_toast") : t("settings.dock.shown_toast"));
     } catch (e) {
       this.toast("error", e.message || t("settings.save_error"));
+    }
+  },
+
+  // ============================================================
+  // MASK EDITING (Generate) + INPAINT STUDIO
+  // Mirror of frontend/js/modules/mask-core.js, generate-mask.js and inpaint.js
+  // ============================================================
+
+  maskT(key, fallback, vars) {
+    const value = t(key, vars || {});
+    if (value && value !== key) return value;
+    return fallback || key;
+  },
+
+  // ---------- Mask core ----------
+  pointerToCanvasPoint(canvas, event) {
+    if (!canvas || !event) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const x = (event.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (event.clientY - rect.top) * (canvas.height / rect.height);
+    return { x, y };
+  },
+
+  syncOverlayGeometry(canvas, targetEl) {
+    if (!canvas || !targetEl) return;
+    const parent = canvas.offsetParent || canvas.parentElement;
+    let left = targetEl.offsetLeft || 0;
+    let top = targetEl.offsetTop || 0;
+
+    if (parent && targetEl.offsetParent && targetEl.offsetParent !== parent) {
+      const targetRect = targetEl.getBoundingClientRect();
+      const parentRect = parent.getBoundingClientRect();
+      const scale = parentRect.width ? (parent.offsetWidth || parentRect.width) / parentRect.width : 1;
+      left = (targetRect.left - parentRect.left) * scale;
+      top = (targetRect.top - parentRect.top) * scale;
+    }
+
+    canvas.style.left = `${left}px`;
+    canvas.style.top = `${top}px`;
+    canvas.style.width = `${targetEl.offsetWidth || targetEl.clientWidth || 0}px`;
+    canvas.style.height = `${targetEl.offsetHeight || targetEl.clientHeight || 0}px`;
+  },
+
+  createMaskSurface(dataCanvas, options = {}) {
+    if (!dataCanvas) return null;
+
+    const visualCanvas = options.visualCanvas || null;
+    const ctx = dataCanvas.getContext("2d");
+    const vctx = visualCanvas ? visualCanvas.getContext("2d") : null;
+
+    const clamp = (value, min, max) => {
+      const v = Number(value);
+      if (!Number.isFinite(v)) return min;
+      return Math.min(max, Math.max(min, v));
+    };
+
+    const st = {
+      brushSize: clamp(options.brushSize ?? 64, 1, 4096),
+      softness: clamp(options.softness ?? 0.5, 0, 1),
+      mode: options.mode === "eraser" ? "eraser" : "brush",
+      color: options.color || "rgba(239, 68, 68, 0.45)",
+      eraseColor: options.eraseColor || "rgba(56, 189, 248, 0.45)",
+      maxHistory: clamp(options.maxHistory ?? 24, 1, 100),
+    };
+
+    const undoStack = [];
+    const redoStack = [];
+    let drawing = false;
+    let lastPoint = null;
+    let dirty = false;
+    let visualQueued = false;
+    let scratch = null;
+
+    const renderVisual = () => {
+      if (!vctx || !visualCanvas) return;
+      vctx.clearRect(0, 0, visualCanvas.width, visualCanvas.height);
+      vctx.drawImage(dataCanvas, 0, 0, visualCanvas.width, visualCanvas.height);
+      vctx.globalCompositeOperation = "source-in";
+      vctx.fillStyle = st.mode === "eraser" ? st.eraseColor : st.color;
+      vctx.fillRect(0, 0, visualCanvas.width, visualCanvas.height);
+      vctx.globalCompositeOperation = "source-over";
+    };
+
+    const scheduleVisual = () => {
+      if (!vctx || visualQueued) return;
+      visualQueued = true;
+      requestAnimationFrame(() => {
+        visualQueued = false;
+        renderVisual();
+      });
+    };
+
+    const snapshot = () => {
+      try {
+        return dataCanvas.toDataURL("image/png");
+      } catch (_) {
+        return "";
+      }
+    };
+
+    const pushHistory = () => {
+      const snap = snapshot();
+      if (!snap) return;
+      undoStack.push(snap);
+      while (undoStack.length > st.maxHistory) undoStack.shift();
+      redoStack.length = 0;
+    };
+
+    const restoreFromDataURL = (url) => {
+      if (!url) return Promise.resolve(false);
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          ctx.clearRect(0, 0, dataCanvas.width, dataCanvas.height);
+          ctx.drawImage(img, 0, 0, dataCanvas.width, dataCanvas.height);
+          dirty = true;
+          renderVisual();
+          resolve(true);
+        };
+        img.onerror = () => resolve(false);
+        img.src = url;
+      });
+    };
+
+    const undo = () => {
+      if (!undoStack.length) return Promise.resolve(false);
+      redoStack.push(snapshot());
+      const prev = undoStack.pop();
+      return restoreFromDataURL(prev).then((ok) => {
+        if (!ok) undoStack.push(prev);
+        return ok;
+      });
+    };
+
+    const redo = () => {
+      if (!redoStack.length) return Promise.resolve(false);
+      undoStack.push(snapshot());
+      const next = redoStack.pop();
+      return restoreFromDataURL(next).then((ok) => {
+        if (!ok) redoStack.push(next);
+        return ok;
+      });
+    };
+
+    const paintDot = (x, y, erase) => {
+      const radius = Math.max(0.5, st.brushSize / 2);
+      ctx.save();
+      ctx.globalCompositeOperation = erase ? "destination-out" : "source-over";
+      if (st.softness <= 0.02) {
+        ctx.fillStyle = erase ? "rgba(0,0,0,1)" : "rgba(255,255,255,1)";
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const inner = Math.max(0, radius * (1 - st.softness));
+        const grad = ctx.createRadialGradient(x, y, inner, x, y, radius);
+        if (erase) {
+          grad.addColorStop(0, "rgba(0,0,0,1)");
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+        } else {
+          grad.addColorStop(0, "rgba(255,255,255,1)");
+          grad.addColorStop(1, "rgba(255,255,255,0)");
+        }
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    };
+
+    const strokeTo = (x, y) => {
+      const erase = st.mode === "eraser";
+      if (!lastPoint) {
+        paintDot(x, y, erase);
+        lastPoint = { x, y };
+        return;
+      }
+      const dx = x - lastPoint.x;
+      const dy = y - lastPoint.y;
+      const dist = Math.hypot(dx, dy);
+      const step = Math.max(1, (st.brushSize / 2) * 0.25);
+      if (dist < 0.0001) return;
+      const count = Math.max(1, Math.ceil(dist / step));
+      for (let i = 1; i <= count; i++) {
+        const t = i / count;
+        paintDot(lastPoint.x + dx * t, lastPoint.y + dy * t, erase);
+      }
+      lastPoint = { x, y };
+    };
+
+    return {
+      canvas: dataCanvas,
+      visualCanvas,
+      get brushSize() { return st.brushSize; },
+      set brushSize(v) { st.brushSize = clamp(v, 1, 4096); },
+      get softness() { return st.softness; },
+      set softness(v) { st.softness = clamp(v, 0, 1); },
+      get mode() { return st.mode; },
+      set mode(v) { st.mode = v === "eraser" ? "eraser" : "brush"; scheduleVisual(); },
+      get dirty() { return dirty; },
+      get canUndo() { return undoStack.length > 0; },
+      get canRedo() { return redoStack.length > 0; },
+      get isDrawing() { return drawing; },
+
+      resize(width, height) {
+        const w = Math.max(1, Math.round(width));
+        const h = Math.max(1, Math.round(height));
+        if (dataCanvas.width === w && dataCanvas.height === h) return;
+        dataCanvas.width = w;
+        dataCanvas.height = h;
+        if (visualCanvas) {
+          visualCanvas.width = w;
+          visualCanvas.height = h;
+        }
+        ctx.clearRect(0, 0, w, h);
+        undoStack.length = 0;
+        redoStack.length = 0;
+        dirty = false;
+        renderVisual();
+      },
+
+      reset(width, height) {
+        const w = Math.max(1, Math.round(width));
+        const h = Math.max(1, Math.round(height));
+        dataCanvas.width = w;
+        dataCanvas.height = h;
+        if (visualCanvas) {
+          visualCanvas.width = w;
+          visualCanvas.height = h;
+        }
+        ctx.clearRect(0, 0, w, h);
+        undoStack.length = 0;
+        redoStack.length = 0;
+        dirty = false;
+        renderVisual();
+      },
+
+      clear(record = true) {
+        if (record) pushHistory();
+        ctx.clearRect(0, 0, dataCanvas.width, dataCanvas.height);
+        dirty = true;
+        renderVisual();
+      },
+
+      invert(record = true) {
+        if (record) pushHistory();
+        const w = dataCanvas.width;
+        const h = dataCanvas.height;
+        if (!scratch) scratch = document.createElement("canvas");
+        scratch.width = w;
+        scratch.height = h;
+        const sctx = scratch.getContext("2d");
+        sctx.clearRect(0, 0, w, h);
+        sctx.fillStyle = "#000000";
+        sctx.fillRect(0, 0, w, h);
+        sctx.globalCompositeOperation = "destination-out";
+        sctx.drawImage(dataCanvas, 0, 0);
+        sctx.globalCompositeOperation = "source-over";
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(scratch, 0, 0);
+        dirty = true;
+        renderVisual();
+      },
+
+      beginStroke(x, y, eraseOverride = null) {
+        pushHistory();
+        drawing = true;
+        lastPoint = null;
+        const prevMode = st.mode;
+        if (eraseOverride === true) st.mode = "eraser";
+        else if (eraseOverride === false) st.mode = "brush";
+        strokeTo(x, y);
+        if (eraseOverride !== null) st.mode = prevMode;
+        dirty = true;
+        scheduleVisual();
+      },
+
+      continueStroke(x, y) {
+        if (!drawing) return;
+        strokeTo(x, y);
+        dirty = true;
+        scheduleVisual();
+      },
+
+      endStroke() {
+        if (!drawing) return;
+        drawing = false;
+        lastPoint = null;
+        renderVisual();
+      },
+
+      undo,
+      redo,
+
+      toDataURL() {
+        return snapshot();
+      },
+
+      loadDataURL(url) {
+        return restoreFromDataURL(url).then((ok) => {
+          dirty = ok;
+          renderVisual();
+          return ok;
+        });
+      },
+
+      coverage() {
+        const w = 64;
+        const h = 64;
+        if (!scratch) scratch = document.createElement("canvas");
+        scratch.width = w;
+        scratch.height = h;
+        const sctx = scratch.getContext("2d");
+        sctx.clearRect(0, 0, w, h);
+        sctx.drawImage(dataCanvas, 0, 0, w, h);
+        const data = sctx.getImageData(0, 0, w, h).data;
+        let sum = 0;
+        for (let i = 3; i < data.length; i += 4) sum += data[i];
+        return sum / (255 * w * h);
+      },
+
+      isEmpty() {
+        return this.coverage() <= 0.002;
+      },
+
+      renderVisual,
+      scheduleVisual,
+    };
+  },
+
+  // ---------- Generate: mask state ----------
+  getGenMaskState() {
+    if (!this.state.genMask) {
+      this.state.genMask = {
+        enabled: false,
+        surface: null,
+        source: null,
+        brushSize: 64,
+        softness: 0.5,
+        mode: "brush",
+        bound: false,
+        sourceLoadSeq: 0,
+      };
+    }
+    return this.state.genMask;
+  },
+
+  getGenMaskCanvas() {
+    return document.getElementById("gen-mask-canvas");
+  },
+
+  getGenMaskPreviewImage() {
+    return document.getElementById("preview-img");
+  },
+
+  ensureGenMaskSurface() {
+    const state = this.getGenMaskState();
+    const canvas = this.getGenMaskCanvas();
+    if (!state || !canvas) return null;
+    if (!state.surface) {
+      const dataCanvas = document.createElement("canvas");
+      dataCanvas.width = 1024;
+      dataCanvas.height = 1024;
+      state.surface = this.createMaskSurface(dataCanvas, { visualCanvas: canvas });
+      state.surface.brushSize = state.brushSize;
+      state.surface.softness = state.softness;
+      state.surface.mode = state.mode;
+    }
+    return state.surface;
+  },
+
+  syncGenMaskGeometry() {
+    const state = this.getGenMaskState();
+    const canvas = this.getGenMaskCanvas();
+    const img = this.getGenMaskPreviewImage();
+    if (!state || !canvas || !img) return;
+    this.syncOverlayGeometry(canvas, img);
+  },
+
+  updateGenMaskPanel() {
+    const state = this.getGenMaskState();
+    if (!state) return;
+
+    const panelEl = document.getElementById("gen-mask-panel");
+    const toggleBtn = document.getElementById("gen-mask-toggle");
+    const hintEl = document.getElementById("gen-mask-hint");
+    const sourceEl = document.getElementById("gen-mask-source-name");
+    const statusEl = document.getElementById("gen-mask-status");
+    const canvas = this.getGenMaskCanvas();
+
+    const hasSource = Boolean(state.source);
+    const canDraw = state.enabled && hasSource;
+
+    if (toggleBtn) toggleBtn.classList.toggle("active", state.enabled);
+    const fabBtn = document.getElementById("gen-mask-fab");
+    if (fabBtn) fabBtn.classList.toggle("active", state.enabled);
+    const inspectorBtn = document.getElementById("inspector-gen-mask-btn");
+    if (inspectorBtn) inspectorBtn.classList.toggle("active", state.enabled);
+    const inspectorHint = document.getElementById("inspector-gen-mask-hint");
+    if (inspectorHint) inspectorHint.style.display = hasSource ? "none" : "block";
+    if (panelEl) panelEl.style.display = state.enabled ? "flex" : "none";
+    if (canvas) {
+      canvas.style.display = canDraw ? "block" : "none";
+      canvas.style.pointerEvents = canDraw ? "auto" : "none";
+    }
+
+    if (hintEl) hintEl.style.display = hasSource ? "none" : "flex";
+    if (sourceEl) sourceEl.textContent = state.source?.name || this.maskT("generate.mask.no_source", "нет изображения");
+
+    if (statusEl) {
+      if (!hasSource) {
+        statusEl.textContent = this.maskT("generate.mask.hint_load", "Загрузите изображение, чтобы рисовать маску");
+      } else if (!state.surface || state.surface.isEmpty()) {
+        statusEl.textContent = this.maskT("generate.mask.hint_empty", "Маска пуста — нарисуйте область для изменения");
+      } else {
+        statusEl.textContent = `${this.maskT("generate.mask.coverage", "Покрытие")}: ${Math.round(state.surface.coverage() * 100)}%`;
+      }
+    }
+
+    const undoBtn = document.getElementById("gen-mask-undo");
+    const redoBtn = document.getElementById("gen-mask-redo");
+    if (undoBtn) undoBtn.disabled = !state.surface || !state.surface.canUndo;
+    if (redoBtn) redoBtn.disabled = !state.surface || !state.surface.canRedo;
+  },
+
+  setGenMaskSource(source) {
+    const state = this.getGenMaskState();
+    if (!state || !source) return;
+    const sourceLoadSeq = (state.sourceLoadSeq || 0) + 1;
+    state.sourceLoadSeq = sourceLoadSeq;
+
+    const img = this.getGenMaskPreviewImage();
+    const placeholder = document.getElementById("preview-placeholder");
+    const wrap = document.getElementById("preview-image-wrap");
+
+    if (placeholder) placeholder.style.display = "none";
+    if (wrap) wrap.style.display = "flex";
+
+    const applyLoadedSource = () => {
+      if (state.sourceLoadSeq !== sourceLoadSeq) return;
+      const changed = !state.source
+        || state.source.url !== source.url
+        || state.source.path !== source.path;
+      state.source = {
+        url: source.url,
+        path: source.path,
+        name: source.name || source.url.split("/").pop(),
+        width: img?.naturalWidth || 1024,
+        height: img?.naturalHeight || 1024,
+      };
+      const surface = this.ensureGenMaskSurface();
+      if (changed && surface) {
+        surface.reset(state.source.width, state.source.height);
+        this.syncGenMaskGeometry();
+        this.updateGenMaskPanel();
+      } else {
+        this.resizeGenMaskToSource();
+      }
+    };
+
+    if (img) {
+      img.src = source.url;
+      const expectedUrl = new URL(source.url, document.baseURI).href;
+      if (img.complete && img.naturalWidth && img.currentSrc === expectedUrl) {
+        applyLoadedSource();
+      } else {
+        img.addEventListener("load", applyLoadedSource, { once: true });
+      }
+    } else {
+      applyLoadedSource();
+    }
+
+    this.state.currentPreviewUrl = source.url;
+    this.state.currentPreviewFilename = source.path || source.url.split("/").pop();
+
+    this.updateGenMaskPanel();
+    this.syncGenMaskGeometry();
+  },
+
+  resizeGenMaskToSource() {
+    const state = this.getGenMaskState();
+    const surface = this.ensureGenMaskSurface();
+    const img = this.getGenMaskPreviewImage();
+    if (!state || !surface || !img) return;
+    const width = img.naturalWidth || state.source?.width || 1024;
+    const height = img.naturalHeight || state.source?.height || 1024;
+    surface.resize(width, height);
+    if (state.source) {
+      state.source.width = width;
+      state.source.height = height;
+    }
+    this.syncGenMaskGeometry();
+    this.updateGenMaskPanel();
+  },
+
+  enableGenMaskWithSource(appRef, source) {
+    const app = appRef || this;
+    const state = app.getGenMaskState();
+    if (!state) return;
+    app.setGenMaskSource(source);
+    state.enabled = true;
+    app.resizeGenMaskToSource();
+    app.updateGenMaskPanel();
+    app.syncGenMaskGeometry();
+  },
+
+  toggleGenMask() {
+    const state = this.getGenMaskState();
+    if (!state) return;
+
+    if (state.enabled) {
+      state.enabled = false;
+      this.updateGenMaskPanel();
+      return;
+    }
+
+    const currentUrl = this.state.currentPreviewUrl;
+    const currentName = this.state.currentPreviewFilename;
+    if (!currentUrl) {
+      state.enabled = true;
+      this.updateGenMaskPanel();
+      this.toast("warning", this.maskT("generate.mask.hint_load", "Загрузите изображение, чтобы рисовать маску"));
+      return;
+    }
+
+    this.ensureGenMaskSurface();
+    state.enabled = true;
+    state.source = {
+      url: currentUrl,
+      path: currentName,
+      name: currentName || currentUrl.split("/").pop(),
+      width: this.getGenMaskPreviewImage()?.naturalWidth || 1024,
+      height: this.getGenMaskPreviewImage()?.naturalHeight || 1024,
+    };
+    this.resizeGenMaskToSource();
+    this.updateGenMaskPanel();
+    this.syncGenMaskGeometry();
+  },
+
+  setGenMaskTool(mode) {
+    const state = this.getGenMaskState();
+    if (!state) return;
+    state.mode = mode === "eraser" ? "eraser" : "brush";
+    if (state.surface) state.surface.mode = state.mode;
+    document.getElementById("gen-mask-tool-brush")?.classList.toggle("active", state.mode === "brush");
+    document.getElementById("gen-mask-tool-eraser")?.classList.toggle("active", state.mode === "eraser");
+    this.updateGenMaskPanel();
+  },
+
+  setGenMaskBrushSize(value) {
+    const state = this.getGenMaskState();
+    if (!state) return;
+    state.brushSize = Math.max(1, Math.min(4096, Number(value) || 64));
+    if (state.surface) state.surface.brushSize = state.brushSize;
+    const label = document.getElementById("gen-mask-size-val");
+    if (label) label.textContent = String(Math.round(state.brushSize));
+  },
+
+  setGenMaskSoftness(value) {
+    const state = this.getGenMaskState();
+    if (!state) return;
+    state.softness = Math.max(0, Math.min(1, Number(value)));
+    if (state.surface) state.surface.softness = state.softness;
+    const label = document.getElementById("gen-mask-softness-val");
+    if (label) label.textContent = `${Math.round(state.softness * 100)}%`;
+  },
+
+  undoGenMask() {
+    const state = this.getGenMaskState();
+    if (!state || !state.surface) return;
+    state.surface.undo().then(() => this.updateGenMaskPanel());
+  },
+
+  redoGenMask() {
+    const state = this.getGenMaskState();
+    if (!state || !state.surface) return;
+    state.surface.redo().then(() => this.updateGenMaskPanel());
+  },
+
+  clearGenMask() {
+    const state = this.getGenMaskState();
+    if (!state || !state.surface) return;
+    state.surface.clear();
+    this.updateGenMaskPanel();
+  },
+
+  invertGenMask() {
+    const state = this.getGenMaskState();
+    if (!state || !state.surface) return;
+    state.surface.invert();
+    this.updateGenMaskPanel();
+  },
+
+  async uploadGenMaskFile(file) {
+    if (!file) return;
+    try {
+      const data = await this.apiUpload(file);
+      this.setGenMaskSource({
+        url: data.url,
+        path: data.path,
+        name: file.name || data.path,
+      });
+      this.toast("success", this.maskT("generate.mask.loaded", "Изображение загружено"));
+    } catch (e) {
+      this.toast("error", e.message || "Ошибка загрузки");
+    }
+  },
+
+  useCanvasImageForMask() {
+    if (!this.state.currentPreviewUrl || !this.state.currentPreviewFilename) {
+      this.toast("warning", this.maskT("generate.mask.hint_load", "Загрузите изображение, чтобы рисовать маску"));
+      return;
+    }
+    this.setGenMaskSource({
+      url: this.state.currentPreviewUrl,
+      path: this.state.currentPreviewFilename,
+      name: this.state.currentPreviewFilename,
+    });
+  },
+
+  getMaskCapableModels() {
+    return (this.state.models || []).filter((m) => m.supports_mask);
+  },
+
+  applyGenMaskParams(params) {
+    const state = this.getGenMaskState();
+    if (!state) return "none";
+    if (!state.enabled || !state.surface || !state.source) return "none";
+    if (state.surface.isEmpty()) return "empty";
+
+    params.init_image_path = state.source.path;
+    params.init_image_strength = 1.0;
+    params.ref_mode = "img2img";
+    // Generate in the source frame so that the mask needs no resampling.
+    const sourceW = Math.round((state.source.width || 1024) / 8) * 8;
+    const sourceH = Math.round((state.source.height || 1024) / 8) * 8;
+    params.width = Math.max(256, Math.min(4096, sourceW));
+    params.height = Math.max(256, Math.min(4096, sourceH));
+    params.mask = state.surface.toDataURL();
+    params.mask_strength = 1.0;
+    params.mask_grow = 6;
+    params.mask_blur = 0.0;
+    return "ok";
+  },
+
+  initGenMaskUI() {
+    const state = this.getGenMaskState();
+    if (!state) return;
+    if (state.bound) {
+      this.updateGenMaskPanel();
+      return;
+    }
+    state.bound = true;
+
+    const canvas = this.getGenMaskCanvas();
+    if (canvas) {
+      let painting = false;
+
+      canvas.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        const st = this.getGenMaskState();
+        if (!st?.enabled) return;
+        const surface = this.ensureGenMaskSurface();
+        if (!surface) return;
+        const point = this.pointerToCanvasPoint(canvas, event);
+        if (!point) return;
+        event.preventDefault();
+        event.stopPropagation();
+        painting = true;
+        surface.mode = st.mode;
+        surface.beginStroke(point.x, point.y);
+        try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+        this.updateGenMaskPanel();
+      });
+
+      canvas.addEventListener("pointermove", (event) => {
+        const st = this.getGenMaskState();
+        if (!st?.enabled) return;
+        const point = this.pointerToCanvasPoint(canvas, event);
+        if (painting && point && st.surface) {
+          st.surface.continueStroke(point.x, point.y);
+        }
+      });
+
+      const end = () => {
+        if (!painting) return;
+        painting = false;
+        const st = this.getGenMaskState();
+        if (st?.surface) st.surface.endStroke();
+        this.updateGenMaskPanel();
+      };
+      canvas.addEventListener("pointerup", end);
+      canvas.addEventListener("pointercancel", end);
+      canvas.addEventListener("pointerleave", end);
+    }
+
+    const img = this.getGenMaskPreviewImage();
+    if (img && typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => this.syncGenMaskGeometry());
+      observer.observe(img);
+      state.maskObserver = observer;
+    }
+    window.addEventListener("resize", () => this.syncGenMaskGeometry());
+
+    document.getElementById("gen-mask-tool-brush")?.addEventListener("click", () => this.setGenMaskTool("brush"));
+    document.getElementById("gen-mask-tool-eraser")?.addEventListener("click", () => this.setGenMaskTool("eraser"));
+
+    const fileInput = document.getElementById("gen-mask-file-input");
+    fileInput?.addEventListener("change", (event) => {
+      const file = event.target.files?.[0];
+      if (file) this.uploadGenMaskFile(file);
+      event.target.value = "";
+    });
+
+    this.updateGenMaskPanel();
+  },
+
+  // ---------- Inpaint studio ----------
+  getInpaintState() {
+    if (!this.state.inpaint) {
+      this.state.inpaint = {
+        source: null,
+        layers: [],
+        activeLayerId: null,
+        history: [],
+        future: [],
+        brushSize: 64,
+        softness: 0.5,
+        mode: "brush",
+        generating: false,
+        applyingResult: false,
+        jobId: null,
+        pollTimer: null,
+        lastMaskSnapshot: null,
+        sourceLoadSeq: 0,
+        jobContext: null,
+      };
+    }
+    return this.state.inpaint;
+  },
+
+  getInpaintCompositeCanvas() {
+    return document.getElementById("inpaint-composite");
+  },
+
+  getInpaintMaskStack() {
+    return document.getElementById("inpaint-mask-stack");
+  },
+
+  getInpaintActiveLayer() {
+    const state = this.getInpaintState();
+    if (!state) return null;
+    return state.layers.find((l) => l.id === state.activeLayerId) || null;
+  },
+
+  getInpaintActiveMaskLayer() {
+    const layer = this.getInpaintActiveLayer();
+    return layer && layer.type === "mask" ? layer : null;
+  },
+
+  getInpaintLayerById(id) {
+    const state = this.getInpaintState();
+    if (!state) return null;
+    return state.layers.find((l) => l.id === id) || null;
+  },
+
+  createInpaintMaskLayer(state, name) {
+    const width = state.source?.width || 1024;
+    const height = state.source?.height || 1024;
+
+    const dataCanvas = document.createElement("canvas");
+    dataCanvas.width = width;
+    dataCanvas.height = height;
+
+    const viewCanvas = document.createElement("canvas");
+    viewCanvas.width = width;
+    viewCanvas.height = height;
+    viewCanvas.className = "inpaint-mask-canvas";
+    viewCanvas.dataset.layerId = "";
+
+    const surface = this.createMaskSurface(dataCanvas, { visualCanvas: viewCanvas });
+
+    const layer = {
+      id: `mask_${Date.now().toString(36)}_${(this._inpaintLayerSeq = (this._inpaintLayerSeq || 0) + 1).toString(36)}`,
+      type: "mask",
+      name: name || this.maskT("inpaint.layer.mask", "Маска"),
+      visible: true,
+      opacity: 1,
+      locked: false,
+      surface,
+      dataCanvas,
+      viewCanvas,
+    };
+    viewCanvas.dataset.layerId = layer.id;
+    return layer;
+  },
+
+  attachInpaintMaskLayerView(layer) {
+    const stack = this.getInpaintMaskStack();
+    if (!stack || !layer) return;
+    if (layer.viewCanvas && layer.viewCanvas.parentElement !== stack) {
+      stack.appendChild(layer.viewCanvas);
+    }
+    layer.viewCanvas.style.display = "none";
+    layer.viewCanvas.style.pointerEvents = "none";
+  },
+
+  refreshInpaintMaskLayerViews() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    for (const layer of state.layers) {
+      if (layer.type !== "mask" || !layer.viewCanvas) continue;
+      const isActive = layer.id === state.activeLayerId;
+      layer.viewCanvas.style.display = isActive && layer.visible ? "block" : "none";
+      layer.viewCanvas.style.pointerEvents = isActive && layer.visible ? "auto" : "none";
+      layer.viewCanvas.style.opacity = String(layer.opacity ?? 1);
+    }
+  },
+
+  renderInpaintComposite() {
+    const state = this.getInpaintState();
+    const canvas = this.getInpaintCompositeCanvas();
+    if (!state || !canvas) return;
+
+    const width = state.source?.width || canvas.width || 1024;
+    const height = state.source?.height || canvas.height || 1024;
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, width, height);
+
+    for (const layer of state.layers) {
+      if (!layer.visible) continue;
+      if (layer.type === "source") {
+        if (layer.image) {
+          ctx.save();
+          ctx.globalAlpha = Number.isFinite(layer.opacity) ? layer.opacity : 1;
+          ctx.drawImage(layer.image, 0, 0, width, height);
+          ctx.restore();
+        }
+      } else if (layer.type === "result") {
+        this.drawInpaintResultLayer(ctx, layer, width, height);
+      }
+    }
+  },
+
+  drawInpaintResultLayer(ctx, layer, width, height) {
+    if (!layer.image) return;
+    const tmp = this.getInpaintScratchCanvas(width, height);
+    const tctx = tmp.getContext("2d");
+    tctx.clearRect(0, 0, width, height);
+    tctx.drawImage(layer.image, 0, 0, width, height);
+
+    if (layer.maskImage) {
+      tctx.globalCompositeOperation = "destination-in";
+      tctx.drawImage(layer.maskImage, 0, 0, width, height);
+      tctx.globalCompositeOperation = "source-over";
+    }
+
+    ctx.save();
+    ctx.globalAlpha = Number.isFinite(layer.opacity) ? layer.opacity : 1;
+    ctx.drawImage(tmp, 0, 0);
+    ctx.restore();
+  },
+
+  getInpaintScratchCanvas(width, height) {
+    if (!this._inpaintScratch) this._inpaintScratch = document.createElement("canvas");
+    const scratch = this._inpaintScratch;
+    if (scratch.width !== width || scratch.height !== height) {
+      scratch.width = width;
+      scratch.height = height;
+    }
+    return scratch;
+  },
+
+  captureInpaintSnapshot(state) {
+    return {
+      activeLayerId: state.activeLayerId,
+      layers: state.layers.map((layer) => ({
+        id: layer.id,
+        type: layer.type,
+        name: layer.name,
+        visible: layer.visible,
+        opacity: layer.opacity,
+        url: layer.url || null,
+        maskDataUrl: layer.type === "mask" ? layer.surface.toDataURL() : null,
+        maskImageSrc: layer.type === "result" ? layer.maskImageSrc || null : null,
+      })),
+    };
+  },
+
+  pushInpaintHistory(state, snapshot = null) {
+    state.history.push(snapshot || this.captureInpaintSnapshot(state));
+    while (state.history.length > 20) state.history.shift();
+    state.future.length = 0;
+  },
+
+  async restoreInpaintSnapshot(snapshot) {
+    const state = this.getInpaintState();
+    if (!state || !snapshot) return;
+
+    const stack = this.getInpaintMaskStack();
+    if (stack) stack.innerHTML = "";
+
+    const restored = [];
+    for (const saved of snapshot.layers) {
+      if (saved.type === "source") {
+        const source = state.source;
+        if (!source) continue;
+        restored.push({
+          id: saved.id,
+          type: "source",
+          name: saved.name,
+          visible: saved.visible,
+          opacity: saved.opacity,
+          locked: true,
+          image: source.img,
+          url: source.url,
+        });
+      } else if (saved.type === "mask") {
+        const layer = this.createInpaintMaskLayer(state, saved.name);
+        layer.id = saved.id;
+        layer.visible = saved.visible;
+        layer.opacity = saved.opacity;
+        if (saved.maskDataUrl) await layer.surface.loadDataURL(saved.maskDataUrl);
+        this.attachInpaintMaskLayerView(layer);
+        restored.push(layer);
+      } else if (saved.type === "result") {
+        const layer = {
+          id: saved.id,
+          type: "result",
+          name: saved.name,
+          visible: saved.visible,
+          opacity: saved.opacity,
+          url: saved.url || null,
+          image: null,
+          maskImage: null,
+          maskImageSrc: saved.maskImageSrc || null,
+        };
+        if (layer.url) {
+          const img = new Image();
+          await new Promise((resolve) => {
+            img.onload = resolve;
+            img.onerror = resolve;
+            img.src = layer.url;
+          });
+          layer.image = img;
+        }
+        if (layer.maskImageSrc) {
+          const mimg = new Image();
+          await new Promise((resolve) => {
+            mimg.onload = resolve;
+            mimg.onerror = resolve;
+            mimg.src = layer.maskImageSrc;
+          });
+          layer.maskImage = mimg;
+        }
+        restored.push(layer);
+      }
+    }
+
+    state.layers = restored;
+    state.activeLayerId = snapshot.activeLayerId;
+    if (!this.getInpaintLayerById(state.activeLayerId)) {
+      const fallback = state.layers.find((l) => l.type === "mask") || state.layers[0] || null;
+      state.activeLayerId = fallback ? fallback.id : null;
+    }
+    this.refreshInpaintMaskLayerViews();
+    this.renderInpaintComposite();
+    this.renderInpaintLayersUI();
+  },
+
+  undoInpaint() {
+    const state = this.getInpaintState();
+    if (!state || !state.history.length) return;
+    const current = this.captureInpaintSnapshot(state);
+    const previous = state.history.pop();
+    state.future.push(current);
+    this.restoreInpaintSnapshot(previous);
+  },
+
+  redoInpaint() {
+    const state = this.getInpaintState();
+    if (!state || !state.future.length) return;
+    const current = this.captureInpaintSnapshot(state);
+    const next = state.future.pop();
+    state.history.push(current);
+    this.restoreInpaintSnapshot(next);
+  },
+
+  async loadInpaintSource(url, path, name, appRef) {
+    const app = appRef || this;
+    const state = app.getInpaintState();
+    if (!state) return;
+
+    const loadSeq = (state.sourceLoadSeq || 0) + 1;
+    state.sourceLoadSeq = loadSeq;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    try {
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error("Не удалось загрузить изображение"));
+        img.src = url;
+      });
+    } catch (err) {
+      this.toast("error", err.message || "Не удалось загрузить изображение");
+      return;
+    }
+
+    if (state.sourceLoadSeq !== loadSeq || !img.complete || !img.naturalWidth) return;
+
+    state.source = {
+      token: loadSeq,
+      url,
+      path: path || "",
+      name: name || (url.split("/").pop() || "image.png"),
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+      img,
+    };
+
+    state.layers = [];
+    state.history.length = 0;
+    state.future.length = 0;
+
+    const sourceLayer = {
+      id: `source_${Date.now().toString(36)}_1`,
+      type: "source",
+      name: this.maskT("inpaint.layer.source", "Исходник"),
+      visible: true,
+      opacity: 1,
+      locked: true,
+      image: img,
+      url,
+    };
+    state.layers.push(sourceLayer);
+    state.activeLayerId = sourceLayer.id;
+
+    const stack = this.getInpaintMaskStack();
+    if (stack) stack.innerHTML = "";
+
+    const maskLayer = this.createInpaintMaskLayer(state);
+    this.attachInpaintMaskLayerView(maskLayer);
+    state.layers.push(maskLayer);
+    state.activeLayerId = maskLayer.id;
+
+    this.refreshInpaintMaskLayerViews();
+    this.renderInpaintComposite();
+    this.renderInpaintLayersUI();
+    this.updateInpaintStatus();
+    this.syncInpaintGeometry();
+  },
+
+  syncInpaintGeometry() {
+    const state = this.getInpaintState();
+    const canvas = this.getInpaintCompositeCanvas();
+    if (!state || !canvas || !state.source) return;
+    if (canvas.width !== state.source.width) canvas.width = state.source.width;
+    if (canvas.height !== state.source.height) canvas.height = state.source.height;
+    for (const layer of state.layers) {
+      if (layer.type !== "mask") continue;
+      if (layer.viewCanvas.width !== state.source.width) layer.viewCanvas.width = state.source.width;
+      if (layer.viewCanvas.height !== state.source.height) layer.viewCanvas.height = state.source.height;
+    }
+  },
+
+  renderInpaintLayersUI() {
+    const state = this.getInpaintState();
+    const list = document.getElementById("inpaint-layers-list");
+    if (!state || !list) return;
+
+    const layer = this.getInpaintActiveLayer();
+    const opacityInput = document.getElementById("inpaint-layer-opacity");
+    const opacityNum = document.getElementById("inpaint-layer-opacity-num");
+    const opacity = layer ? Number(layer.opacity ?? 1) : 1;
+    if (opacityInput) opacityInput.value = String(opacity);
+    if (opacityNum) opacityNum.textContent = opacity.toFixed(2);
+
+    const deleteBtn = document.getElementById("inpaint-layer-delete");
+    if (deleteBtn) deleteBtn.disabled = !layer || layer.type === "source";
+
+    const ordered = [...state.layers].reverse();
+
+    list.innerHTML = ordered.map((l) => {
+      const isActive = l.id === state.activeLayerId;
+      const badge = l.type === "source" ? "🔒" : l.type === "mask" ? "🎭" : "✨";
+      const thumb = this.inpaintLayerThumb(l);
+      return `
+      <div class="inpaint-layer-item${isActive ? " active" : ""}" data-layer-id="${l.id}" onclick="App.selectInpaintLayer('${l.id}')">
+        <span class="inpaint-layer-badge">${badge}</span>
+        <span class="inpaint-layer-thumb">${thumb}</span>
+        <span class="inpaint-layer-name" title="${escapeHtml(l.name)}">${escapeHtml(l.name)}</span>
+        <button class="inpaint-layer-eye" title="${l.visible ? "Скрыть" : "Показать"}" onclick="event.stopPropagation(); App.toggleInpaintLayerVisible('${l.id}')">${l.visible ? "👁" : "🚫"}</button>
+      </div>`;
+    }).join("");
+
+    if (!state.layers.length) {
+      list.innerHTML = `<div class="inpaint-layers-empty">${this.maskT("inpaint.layers.empty", "Слоёв пока нет — загрузите изображение")}</div>`;
+    }
+  },
+
+  inpaintLayerThumb(layer) {
+    if (layer.type === "source") {
+      return layer.url ? `<img src="${escapeHtml(layer.url)}" alt="" />` : "";
+    }
+    if (layer.type === "result") {
+      return layer.url ? `<img src="${escapeHtml(layer.url)}" alt="" />` : "";
+    }
+    return `<span class="inpaint-layer-thumb-mask">🎭</span>`;
+  },
+
+  selectInpaintLayer(id) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const layer = this.getInpaintLayerById(id);
+    if (!layer) return;
+    state.activeLayerId = id;
+    this.refreshInpaintMaskLayerViews();
+    this.renderInpaintLayersUI();
+    this.updateInpaintStatus();
+  },
+
+  addInpaintMaskLayer() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    if (!state.source) {
+      this.toast("warning", this.maskT("inpaint.hint.no_source", "Сначала загрузите изображение"));
+      return;
+    }
+    this.pushInpaintHistory(state);
+    const layer = this.createInpaintMaskLayer(
+      state,
+      `${this.maskT("inpaint.layer.mask", "Маска")} ${state.layers.filter((l) => l.type === "mask").length + 1}`
+    );
+    this.attachInpaintMaskLayerView(layer);
+    state.layers.push(layer);
+    state.activeLayerId = layer.id;
+    this.refreshInpaintMaskLayerViews();
+    this.renderInpaintLayersUI();
+    this.updateInpaintStatus();
+  },
+
+  addInpaintResultLayer() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    if (!state.source) {
+      this.toast("warning", this.maskT("inpaint.hint.no_source", "Сначала загрузите изображение"));
+      return;
+    }
+    this.pushInpaintHistory(state);
+    const layer = {
+      id: `result_${Date.now().toString(36)}_${(this._inpaintLayerSeq = (this._inpaintLayerSeq || 0) + 1).toString(36)}`,
+      type: "result",
+      name: `${this.maskT("inpaint.layer.result", "Результат")} ${state.layers.filter((l) => l.type === "result").length + 1}`,
+      visible: true,
+      opacity: 1,
+      image: null,
+      maskImage: null,
+      maskImageSrc: null,
+      url: null,
+    };
+    state.layers.push(layer);
+    state.activeLayerId = layer.id;
+    this.renderInpaintLayersUI();
+    this.updateInpaintStatus();
+  },
+
+  removeInpaintLayer(id) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const layer = this.getInpaintLayerById(id);
+    if (!layer) return;
+    if (layer.type === "source") {
+      this.toast("warning", this.maskT("inpaint.hint.source_locked", "Слой «Исходник» удалить нельзя"));
+      return;
+    }
+    this.pushInpaintHistory(state);
+    state.layers = state.layers.filter((l) => l.id !== id);
+    if (layer.viewCanvas && layer.viewCanvas.parentElement) {
+      layer.viewCanvas.parentElement.removeChild(layer.viewCanvas);
+    }
+    if (state.activeLayerId === id) {
+      const fallback = state.layers.find((l) => l.type === "mask") || state.layers[state.layers.length - 1] || null;
+      state.activeLayerId = fallback ? fallback.id : null;
+    }
+    this.refreshInpaintMaskLayerViews();
+    this.renderInpaintComposite();
+    this.renderInpaintLayersUI();
+    this.updateInpaintStatus();
+  },
+
+  duplicateInpaintLayer(id) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const layer = this.getInpaintLayerById(id);
+    if (!layer) return;
+    if (layer.type === "source") {
+      this.toast("warning", this.maskT("inpaint.hint.source_locked", "Слой «Исходник» дублировать нельзя"));
+      return;
+    }
+    this.pushInpaintHistory(state);
+    const copy = { ...layer };
+    copy.id = `${layer.type}_${Date.now().toString(36)}_${(this._inpaintLayerSeq = (this._inpaintLayerSeq || 0) + 1).toString(36)}`;
+    copy.name = `${layer.name} ${this.maskT("inpaint.layer.copy_suffix", "(копия)")}`;
+    if (layer.type === "mask") {
+      copy.dataCanvas = document.createElement("canvas");
+      copy.dataCanvas.width = layer.dataCanvas.width;
+      copy.dataCanvas.height = layer.dataCanvas.height;
+      copy.dataCanvas.getContext("2d").drawImage(layer.dataCanvas, 0, 0);
+      copy.viewCanvas = document.createElement("canvas");
+      copy.viewCanvas.width = layer.viewCanvas.width;
+      copy.viewCanvas.height = layer.viewCanvas.height;
+      copy.viewCanvas.className = "inpaint-mask-canvas";
+      copy.surface = this.createMaskSurface(copy.dataCanvas, { visualCanvas: copy.viewCanvas });
+      copy.surface.loadDataURL(layer.surface.toDataURL());
+      this.attachInpaintMaskLayerView(copy);
+    }
+    const index = state.layers.findIndex((l) => l.id === id);
+    state.layers.splice(index + 1, 0, copy);
+    state.activeLayerId = copy.id;
+    this.refreshInpaintMaskLayerViews();
+    this.renderInpaintComposite();
+    this.renderInpaintLayersUI();
+  },
+
+  moveInpaintLayer(id, direction) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const index = state.layers.findIndex((l) => l.id === id);
+    if (index < 0) return;
+    const target = direction === "up" ? index + 1 : index - 1;
+    if (target < 0 || target >= state.layers.length) return;
+    this.pushInpaintHistory(state);
+    const [item] = state.layers.splice(index, 1);
+    state.layers.splice(target, 0, item);
+    this.renderInpaintComposite();
+    this.renderInpaintLayersUI();
+  },
+
+  toggleInpaintLayerVisible(id) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const layer = this.getInpaintLayerById(id);
+    if (!layer) return;
+    this.pushInpaintHistory(state);
+    layer.visible = !layer.visible;
+    this.refreshInpaintMaskLayerViews();
+    this.renderInpaintComposite();
+    this.renderInpaintLayersUI();
+  },
+
+  renameInpaintLayer(id) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const layer = this.getInpaintLayerById(id);
+    if (!layer) return;
+    const name = window.prompt(this.maskT("inpaint.layers.rename_prompt", "Название слоя"), layer.name);
+    if (name === null) return;
+    this.pushInpaintHistory(state);
+    layer.name = String(name).slice(0, 80) || layer.name;
+    this.renderInpaintLayersUI();
+  },
+
+  setInpaintLayerOpacity(id, value) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const layer = this.getInpaintLayerById(id);
+    if (!layer) return;
+    layer.opacity = Math.max(0, Math.min(1, Number(value)));
+    this.refreshInpaintMaskLayerViews();
+    this.renderInpaintComposite();
+    const num = document.getElementById("inpaint-layer-opacity-num");
+    if (num) num.textContent = layer.opacity.toFixed(2);
+  },
+
+  setInpaintTool(mode) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    state.mode = mode === "eraser" ? "eraser" : "brush";
+    const layer = this.getInpaintActiveMaskLayer();
+    if (layer) layer.surface.mode = state.mode;
+    document.getElementById("inpaint-tool-brush")?.classList.toggle("active", state.mode === "brush");
+    document.getElementById("inpaint-tool-eraser")?.classList.toggle("active", state.mode === "eraser");
+  },
+
+  setInpaintBrushSize(value) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    state.brushSize = Math.max(1, Math.min(4096, Number(value) || 64));
+    const label = document.getElementById("inpaint-brush-size-val");
+    if (label) label.textContent = String(Math.round(state.brushSize));
+    const layer = this.getInpaintActiveMaskLayer();
+    if (layer) layer.surface.brushSize = state.brushSize;
+    this.updateInpaintBrushCursor();
+  },
+
+  setInpaintSoftness(value) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    state.softness = Math.max(0, Math.min(1, Number(value)));
+    const label = document.getElementById("inpaint-softness-val");
+    if (label) label.textContent = `${Math.round(state.softness * 100)}%`;
+    const layer = this.getInpaintActiveMaskLayer();
+    if (layer) layer.surface.softness = state.softness;
+  },
+
+  clearInpaintMask() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const layer = this.getInpaintActiveMaskLayer();
+    if (!layer) {
+      this.toast("warning", this.maskT("inpaint.hint.select_mask", "Выберите слой маски"));
+      return;
+    }
+    this.pushInpaintHistory(state);
+    layer.surface.clear(false);
+    this.updateInpaintStatus();
+  },
+
+  invertInpaintMask() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const layer = this.getInpaintActiveMaskLayer();
+    if (!layer) {
+      this.toast("warning", this.maskT("inpaint.hint.select_mask", "Выберите слой маски"));
+      return;
+    }
+    this.pushInpaintHistory(state);
+    layer.surface.invert(false);
+    this.updateInpaintStatus();
+  },
+
+  updateInpaintStatus() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    const statusEl = document.getElementById("inpaint-status");
+    const hintEl = document.getElementById("inpaint-empty-hint");
+    const layer = this.getInpaintActiveMaskLayer();
+
+    if (hintEl) hintEl.style.display = state.source ? "none" : "flex";
+
+    if (!statusEl) return;
+    if (!state.source) {
+      statusEl.textContent = this.maskT("inpaint.hint.no_source", "Сначала загрузите изображение");
+      return;
+    }
+    if (!layer) {
+      statusEl.textContent = this.maskT("inpaint.hint.select_mask", "Выберите слой маски");
+      return;
+    }
+    const coverage = Math.round(layer.surface.coverage() * 100);
+    statusEl.textContent = `${this.maskT("inpaint.status.coverage", "Покрытие маски")}: ${coverage}%`;
+  },
+
+  updateInpaintBrushCursor() {
+    const cursor = document.getElementById("inpaint-brush-cursor");
+    if (!cursor) return;
+    const state = this.getInpaintState();
+    if (!state) return;
+    const layer = this.getInpaintActiveMaskLayer();
+    if (!layer || !layer.viewCanvas) {
+      cursor.style.display = "none";
+      return;
+    }
+    const rect = layer.viewCanvas.getBoundingClientRect();
+    if (!rect.width) return;
+    const scale = rect.width / (layer.viewCanvas.width || 1);
+    const diameter = Math.max(4, state.brushSize * scale);
+    cursor.style.width = `${diameter}px`;
+    cursor.style.height = `${diameter}px`;
+  },
+
+  initInpaintMaskEvents() {
+    const state = this.getInpaintState();
+    const stack = this.getInpaintMaskStack();
+    if (!stack) return;
+    if (stack.dataset.eventsBound === "1") return;
+    stack.dataset.eventsBound = "1";
+
+    let painting = false;
+    let strokeSnapshot = null;
+    let strokeMaskData = null;
+
+    const layerFromEvent = (event) => {
+      const el = event.target.closest?.(".inpaint-mask-canvas");
+      if (!el) return null;
+      const id = el.dataset.layerId;
+      return id ? this.getInpaintLayerById(id) : null;
+    };
+
+    stack.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const layer = layerFromEvent(event);
+      if (!layer || layer.type !== "mask") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const point = this.pointerToCanvasPoint(layer.viewCanvas, event);
+      if (!point) return;
+      painting = true;
+      strokeSnapshot = this.captureInpaintSnapshot(state);
+      strokeMaskData = layer.surface.toDataURL();
+      layer.surface.mode = state.mode;
+      layer.surface.beginStroke(point.x, point.y);
+      try { layer.viewCanvas.setPointerCapture(event.pointerId); } catch (_) {}
+    });
+
+    stack.addEventListener("pointermove", (event) => {
+      const layer = layerFromEvent(event);
+      if (!layer) return;
+      const point = this.pointerToCanvasPoint(layer.viewCanvas, event);
+      if (point) layer.surface.continueStroke(point.x, point.y);
+      this.updateInpaintBrushCursor();
+      const cursor = document.getElementById("inpaint-brush-cursor");
+      if (cursor) {
+        cursor.style.display = "block";
+        cursor.style.left = `${event.clientX}px`;
+        cursor.style.top = `${event.clientY}px`;
+      }
+    });
+
+    const endStroke = () => {
+      if (!painting) return;
+      painting = false;
+      const layer = this.getInpaintActiveMaskLayer();
+      if (layer) layer.surface.endStroke();
+      if (layer && strokeMaskData !== layer.surface.toDataURL()) {
+        this.pushInpaintHistory(state, strokeSnapshot);
+      }
+      strokeSnapshot = null;
+      strokeMaskData = null;
+      this.updateInpaintStatus();
+    };
+    stack.addEventListener("pointerup", endStroke);
+    stack.addEventListener("pointercancel", endStroke);
+    stack.addEventListener("pointerleave", () => {
+      const cursor = document.getElementById("inpaint-brush-cursor");
+      if (cursor) cursor.style.display = "none";
+    });
+  },
+
+  async generateInpaint() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    if (state.generating || state.applyingResult) {
+      this.toast("warning", this.maskT("inpaint.hint.generating", "Генерация уже выполняется"));
+      return;
+    }
+
+    if (!state.source || !state.source.path) {
+      this.toast("warning", this.maskT("inpaint.hint.no_source", "Сначала загрузите изображение"));
+      return;
+    }
+
+    const layer = this.getInpaintActiveMaskLayer();
+    if (!layer || !layer.visible) {
+      this.toast("warning", this.maskT("inpaint.hint.select_mask", "Выберите видимый слой маски"));
+      return;
+    }
+    if (layer.surface.isEmpty()) {
+      this.toast("warning", this.maskT("inpaint.hint.empty_mask", "Маска пуста — нарисуйте область для изменения"));
+      return;
+    }
+
+    const prompt = document.getElementById("inpaint-prompt")?.value?.trim() || "";
+    if (!prompt) {
+      this.toast("warning", this.maskT("inpaint.hint.no_prompt", "Введите промпт"));
+      return;
+    }
+
+    const modelId = document.getElementById("inpaint-model-select")?.value || this.state.selectedModel;
+    const model = (this.state.models || []).find((m) => m.id === modelId);
+    if (!model) {
+      this.toast("warning", this.maskT("inpaint.hint.no_model", "Выберите модель"));
+      return;
+    }
+    if (!model.supports_mask) {
+      const compatible = (this.state.models || []).filter((m) => m.supports_mask);
+      const names = compatible.map((m) => m.name).join(", ") || this.maskT("inpaint.hint.no_compatible", "нет в наличии");
+      this.toast("error", this.maskT(
+        "inpaint.hint.model_unsupported",
+        `Модель «${model.name}» не поддерживает маску. Поддерживают: ${names}`,
+        { name: model.name, list: names }
+      ));
+      return;
+    }
+
+    const steps = parseInt(document.getElementById("inpaint-steps")?.value || "4", 10);
+    const cfg = parseFloat(document.getElementById("inpaint-cfg")?.value || "1.0");
+    const seedRaw = document.getElementById("inpaint-seed")?.value?.trim();
+    const seed = seedRaw === "" || seedRaw === "random" ? null : parseInt(seedRaw, 10);
+    const maskDataUrl = layer.surface.toDataURL();
+    const source = state.source;
+    state.jobContext = {
+      sourceToken: source.token,
+      sourcePath: source.path,
+      maskLayerId: layer.id,
+      maskDataUrl,
+    };
+
+    const params = {
+      model_id: modelId,
+      prompt,
+      width: state.source.width,
+      height: state.source.height,
+      steps: Number.isFinite(steps) ? steps : 4,
+      cfg: Number.isFinite(cfg) ? cfg : 1.0,
+      seed: Number.isFinite(seed) ? seed : null,
+      sampler: document.getElementById("inpaint-sampler")?.value || "euler",
+      init_image_path: state.source.path,
+      init_image_strength: 1.0,
+      mask: maskDataUrl,
+      mask_strength: 1.0,
+      mask_grow: 6,
+      mask_blur: 0.0,
+    };
+
+    state.generating = true;
+    const btn = document.getElementById("inpaint-generate-btn");
+    if (btn) btn.disabled = true;
+
+    try {
+      const result = await this.apiPost("/api/generate", params);
+      state.jobId = result.job_id;
+      state.jobContext.jobId = result.job_id;
+      this.startInpaintPolling(result.job_id);
+    } catch (e) {
+      state.generating = false;
+      state.jobContext = null;
+      if (btn) btn.disabled = false;
+      const data = e?.data || {};
+      const compatible = Array.isArray(data.compatible_models) ? data.compatible_models : [];
+      if (compatible.length) {
+        this.toast("error", `${e.message} ${this.maskT("inpaint.hint.switch_model", "Переключитесь на:")} ${compatible.map((m) => m.name).join(", ")}`);
+      } else {
+        this.toast("error", e.message || "Ошибка генерации");
+      }
+    }
+  },
+
+  startInpaintPolling(jobId) {
+    const state = this.getInpaintState();
+    if (!state) return;
+    if (state.pollTimer) clearInterval(state.pollTimer);
+
+    state.pollTimer = setInterval(async () => {
+      try {
+        const status = await this.apiGet(`/api/jobs/${jobId}`);
+        const progressEl = document.getElementById("inpaint-progress");
+        if (progressEl) {
+          progressEl.style.display = status.status === "complete" ? "none" : "flex";
+          progressEl.textContent = `${Math.round((status.progress || 0) * 100)}%`;
+        }
+        if (status.status === "complete") {
+          this.stopInpaintPolling();
+          await this.applyInpaintResult(status);
+        } else if (status.status === "error") {
+          this.stopInpaintPolling();
+          state.jobContext = null;
+          this.toast("error", status.error || status.message || this.maskT("inpaint.hint.generation_error", "Ошибка генерации"));
+        } else if (status.status === "cancelled") {
+          this.stopInpaintPolling();
+          state.jobContext = null;
+          this.toast("info", this.maskT("inpaint.hint.cancelled", "Генерация отменена"));
+        }
+      } catch (e) {
+        this.stopInpaintPolling();
+        state.jobContext = null;
+        this.toast("error", e.message || "Ошибка опроса задания");
+      }
+    }, 400);
+  },
+
+  stopInpaintPolling() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    if (state.pollTimer) {
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    }
+    state.generating = false;
+    const btn = document.getElementById("inpaint-generate-btn");
+    if (btn) btn.disabled = false;
+    const progressEl = document.getElementById("inpaint-progress");
+    if (progressEl) progressEl.style.display = "none";
+  },
+
+  async applyInpaintResult(status) {
+    const state = this.getInpaintState();
+    if (!state) return;
+
+    const context = state.jobContext;
+    if (
+      !context
+      || state.jobId !== context.jobId
+      || state.source?.token !== context.sourceToken
+      || state.sourceLoadSeq !== context.sourceToken
+    ) {
+      state.jobContext = null;
+      this.toast("warning", this.maskT("inpaint.hint.source_changed", "Источник изменился; результат не добавлен"));
+      return;
+    }
+
+    const raw = status.raw_image_path || null;
+    const composite = status.image_path || "";
+    const fragmentUrl = raw ? `/outputs/${raw}` : `/outputs/${String(composite).split(/[\\/]/).pop()}`;
+
+    state.applyingResult = true;
+    try {
+    const resultImage = new Image();
+    await new Promise((resolve, reject) => {
+      resultImage.onload = resolve;
+      resultImage.onerror = () => reject(new Error("Не удалось загрузить результат генерации"));
+      resultImage.src = fragmentUrl;
+    });
+
+    const maskSnapshot = context.maskDataUrl;
+    const maskImage = new Image();
+    await new Promise((resolve, reject) => {
+      maskImage.onload = resolve;
+      maskImage.onerror = () => reject(new Error("Не удалось загрузить снимок маски"));
+      maskImage.src = maskSnapshot;
+    });
+    if (
+      state.source?.token !== context.sourceToken
+      || state.sourceLoadSeq !== context.sourceToken
+    ) {
+      state.jobContext = null;
+      this.toast("warning", this.maskT("inpaint.hint.source_changed", "Источник изменился; результат не добавлен"));
+      return;
+    }
+    this.pushInpaintHistory(state);
+
+    const layer = {
+      id: `result_${Date.now().toString(36)}_${(this._inpaintLayerSeq = (this._inpaintLayerSeq || 0) + 1).toString(36)}`,
+      type: "result",
+      name: `${this.maskT("inpaint.layer.result", "Результат")} ${state.layers.filter((l) => l.type === "result").length + 1}`,
+      visible: true,
+      opacity: 1,
+      image: resultImage,
+      maskImage,
+      maskImageSrc: maskSnapshot,
+      url: fragmentUrl,
+    };
+
+    state.layers.push(layer);
+    state.activeLayerId = layer.id;
+    state.jobContext = null;
+
+    this.refreshInpaintMaskLayerViews();
+    this.renderInpaintComposite();
+    this.renderInpaintLayersUI();
+    this.updateInpaintStatus();
+    this.toast("success", this.maskT("inpaint.hint.done", "Слой результата создан"));
+    } finally {
+      state.applyingResult = false;
+    }
+  },
+
+  renderInpaintModels() {
+    const select = document.getElementById("inpaint-model-select");
+    if (!select) return;
+
+    const models = this.state.models || [];
+    const previous = select.value;
+    select.innerHTML = "";
+    for (const model of models) {
+      if (model.hidden_from_host) continue;
+      const opt = document.createElement("option");
+      opt.value = model.id;
+      const mark = model.installed ? "✓" : "⬇";
+      const maskMark = model.supports_mask ? "🎭" : "⚠";
+      opt.textContent = `${mark}${maskMark} ${model.name}`;
+      select.appendChild(opt);
+    }
+    if (previous && models.some((m) => m.id === previous)) {
+      select.value = previous;
+    } else if (this.state.selectedModel) {
+      select.value = this.state.selectedModel;
+    }
+    this.updateInpaintModelWarning();
+  },
+
+  updateInpaintModelWarning() {
+    const select = document.getElementById("inpaint-model-select");
+    const warnEl = document.getElementById("inpaint-model-warning");
+    if (!select || !warnEl) return;
+    const model = (this.state.models || []).find((m) => m.id === select.value);
+    if (!model || model.supports_mask) {
+      warnEl.style.display = "none";
+      return;
+    }
+    const compatible = (this.state.models || []).filter((m) => m.supports_mask);
+    warnEl.style.display = "flex";
+    warnEl.innerHTML = `⚠ ${this.maskT("inpaint.hint.model_unsupported_short", "Модель не поддерживает маску")} — ${compatible.map((m) => escapeHtml(m.name)).join(", ") || "—"}`;
+  },
+
+  useCanvasImageInInpaint() {
+    const url = this.state.currentPreviewUrl;
+    const path = this.state.currentPreviewFilename;
+    if (!url || !path) {
+      this.toast("warning", this.maskT("inpaint.hint.no_source", "Сначала загрузите изображение"));
+      return;
+    }
+    this.loadInpaintSource(url, path, path);
+  },
+
+  async uploadInpaintFile(file) {
+    if (!file) return;
+    try {
+      const data = await this.apiUpload(file);
+      await this.loadInpaintSource(data.url, data.path, file.name || data.path);
+      this.toast("success", this.maskT("inpaint.hint.loaded", "Изображение загружено"));
+    } catch (e) {
+      this.toast("error", e.message || "Ошибка загрузки");
+    }
+  },
+
+  initInpaintStudio() {
+    const state = this.getInpaintState();
+    if (!state) return;
+
+    this.initInpaintMaskEvents();
+    this.renderInpaintModels();
+    this.renderInpaintLayersUI();
+    this.updateInpaintStatus();
+
+    const brushBtn = document.getElementById("inpaint-tool-brush");
+    if (brushBtn && !brushBtn.dataset.bound) {
+      brushBtn.dataset.bound = "1";
+      brushBtn.addEventListener("click", () => this.setInpaintTool("brush"));
+    }
+    const eraserBtn = document.getElementById("inpaint-tool-eraser");
+    if (eraserBtn && !eraserBtn.dataset.bound) {
+      eraserBtn.dataset.bound = "1";
+      eraserBtn.addEventListener("click", () => this.setInpaintTool("eraser"));
+    }
+
+    const fileInput = document.getElementById("inpaint-file-input");
+    if (fileInput && !fileInput.dataset.bound) {
+      fileInput.dataset.bound = "1";
+      fileInput.addEventListener("change", (event) => {
+        const file = event.target.files?.[0];
+        if (file) this.uploadInpaintFile(file);
+        event.target.value = "";
+      });
+    }
+
+    if (!state._initialized) {
+      state._initialized = true;
+      this.setInpaintTool("brush");
+      this.setInpaintBrushSize(state.brushSize);
+      this.setInpaintSoftness(state.softness);
     }
   },
 

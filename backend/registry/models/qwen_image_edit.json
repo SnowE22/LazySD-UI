@@ -3,6 +3,7 @@
   "name": "Qwen-Image-Edit (Quantized)",
   "family": "qwen",
   "pipeline": "image_edit",
+  "supports_mask": true,
   "key_protected": true,
   "engine_version": "0.0.17",
   "description": "Multimodal image editing & inpainting model by QuantFunc. Specialized for image-to-image transformations, style transfer, object addition/removal, and prompt-driven line-art / photo edits. Optimized for RTX 30/40/50 series GPUs.",

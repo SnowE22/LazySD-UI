@@ -53,6 +53,8 @@ export function createDefaultState() {
     activeModelsHubSubtab: "installed",
     halftone: null,
     manga: null,
+    genMask: null,
+    inpaint: null,
     viewports: {},
     zoomHudOpacity: 0.95,
   };

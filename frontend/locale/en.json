@@ -1,6 +1,7 @@
 {
   "app.title": "QuantFunc WebUI",
   "app.brand": "QuantFunc",
+
   "nav.generate": "Generate",
   "nav.image_edit": "Image Edit",
   "nav.img2img": "Img2Img",
@@ -9,12 +10,15 @@
   "nav.templates": "Templates",
   "nav.history": "History",
   "nav.settings": "Settings",
+
   "nav.section.pipelines": "Pipelines",
   "nav.section.tools": "Tools",
   "nav.section.system": "System",
+
   "gpu.detected": "GPU detected",
   "gpu.not_detected": "GPU not detected",
   "gpu.checking": "Checking GPU...",
+
   "preview.placeholder": "Generated image will appear here",
   "preview.empty_icon": "🖼",
   "preview.zoom_fit": "Fit",
@@ -22,11 +26,13 @@
   "preview.fullscreen": "Fullscreen",
   "preview.download": "Download",
   "preview.open_folder": "Open folder",
+
   "prompt.placeholder": "Describe the image to generate...",
   "prompt.label": "Prompt",
   "prompt.negative": "Negative prompt",
   "prompt.negative_label": "Negative Prompt",
   "prompt.negative_placeholder": "What to avoid (e.g. blurry, deformed, low quality)...",
+
   "controls.model": "Model",
   "controls.text_encoder": "Text Encoder",
   "controls.custom_te_placeholder": "Path to .safetensors (e.g. from ComfyUI)...",
@@ -56,9 +62,11 @@
   "controls.generate": "Generate",
   "controls.cancel": "Cancel",
   "controls.busy": "Busy...",
+
   "backend.lighting": "Lighting (4 steps, faster)",
   "backend.svdq": "SVDQ (4 steps, runtime LoRA)",
   "backend.svdq_full": "SVDQ (20 steps, full)",
+
   "status.ready": "Ready",
   "status.loading": "Loading...",
   "status.downloading": "Downloading files...",
@@ -69,6 +77,7 @@
   "status.error": "Error",
   "status.cancelled": "Cancelled",
   "status.offline": "Offline",
+
   "model.installed": "Installed",
   "model.incomplete": "Incomplete",
   "model.missing": "Missing",
@@ -80,6 +89,7 @@
   "model.available": "Available",
   "model.not_recommended": "Not recommended",
   "model.size_gb": "GB",
+
   "settings.title": "Settings",
   "settings.section.paths": "Paths",
   "settings.section.engine": "Engine",
@@ -92,15 +102,18 @@
   "settings.section.about": "About & AI Authors",
   "role.host": "Host",
   "role.guest": "Guest",
+
   "settings.vae.qwen_title": "Qwen-Image-2.1 VAE",
   "settings.vae.qwen_desc": "Choose VAE decoder. Texture-Fix eliminates 2px high-frequency checkerboard / carpet patterns.",
   "settings.vae.texture_fix": "Texture-Fix VAE (madebyollin, removes carpet pattern) [Recommended]",
   "settings.vae.official": "Official VAE (Comfy-Org / Wan 2.1)",
+
   "settings.models_dir": "Models directory",
   "settings.output_dir": "Output directory",
   "settings.engine_path": "Engine path",
   "settings.cache_dir": "Cache directory",
   "settings.browse": "Browse",
+
   "settings.engine_version": "Engine version",
   "settings.cuda_version": "CUDA version",
   "settings.check_updates": "Check for updates",
@@ -148,6 +161,7 @@
   "settings.engine.install_started": "Installing {{label}}...",
   "settings.engine.install_done": "{{label}} installation complete",
   "settings.engine.install_failed": "{{label}} installation failed: ",
+
   "settings.gpu_name": "GPU name",
   "settings.gpu_sm": "SM capability",
   "settings.gpu_vram": "VRAM",
@@ -159,6 +173,7 @@
   "settings.vram_mode.maximum": "Maximum",
   "settings.auto_optimize": "Auto optimize",
   "settings.redetect_gpu": "Re-detect GPU",
+
   "settings.download_source": "Download source priority",
   "settings.download_source.auto": "Auto (HF then MS)",
   "settings.download_source.hf_first": "HuggingFace first",
@@ -172,14 +187,17 @@
   "settings.ms_token": "ModelScope token",
   "settings.auto_update": "Auto-update engine",
   "settings.auto_update.warn": "Auto-update is OFF by default (offline-first)",
+
   "settings.qf_api_key": "QuantFunc API key",
   "settings.qf_api_key.hint": "Leave empty to use the shared free-trial test key from bin/<os>/config.json (no registration needed). After the public beta, get your own key at quantfunc.com — it is stored here and passed to the engine as --apikey.",
   "settings.qf_api_key.restore": "Restore test key",
+
   "settings.fbcache_cond": "FBCache cond threshold",
   "settings.fbcache_uncond": "FBCache uncond threshold",
   "settings.rotation_block_size": "Rotation block size",
   "settings.log_level": "Log level",
   "settings.worker_restart": "Auto-restart worker on crash",
+
   "templates.title": "Prompt Templates",
   "templates.new": "New template",
   "templates.import": "Import",
@@ -192,6 +210,7 @@
   "templates.delete": "Delete",
   "templates.save": "Save",
   "templates.cancel": "Cancel",
+
   "history.title": "History",
   "history.empty": "No generations yet",
   "history.rerun": "Re-run",
@@ -206,15 +225,19 @@
   "history.no_prompt": "(No prompt recorded)",
   "history.show_in_folder": "Show in folder",
   "history.open_output_folder": "Output folder",
+
   "dropzone.title": "Drop image here or click to upload",
   "dropzone.subtitle": "PNG, JPG, WEBP up to 25 MB",
+
   "img2img.title": "Reference Image (Img2Img)",
   "img2img.drop_hint": "Drop reference image here or click to upload",
   "img2img.strength": "Image Strength",
   "img2img.strength_hint": "How much to modify reference image (0.1 = subtle tweak, 0.9 = heavy rewrite)",
   "img2img.remove": "Remove image",
   "img2img.send_to": "Edit in Img2Img",
+
   "errors.upload_failed": "Failed to upload reference image",
+
   "toast.engine_downloaded": "Engine downloaded and verified ✓",
   "toast.engine_verify_ok": "Engine is up to date ✓",
   "toast.engine_update_available": "Engine update available",
@@ -224,6 +247,7 @@
   "toast.generation_error": "Generation failed",
   "toast.cancelled": "Cancelled",
   "toast.settings_saved": "Settings saved",
+
   "common.yes": "Yes",
   "common.no": "No",
   "common.ok": "OK",
@@ -238,6 +262,7 @@
   "common.not_installed": "Not installed",
   "common.enabled": "Enabled",
   "common.disabled": "Disabled",
+
   "errors.engine_not_installed": "QuantFunc engine is not installed. Go to Settings → Download engine.",
   "errors.gpu_incompatible": "GPU is incompatible with this model.",
   "errors.missing_files": "Some required files are missing. Download them first.",
@@ -247,6 +272,7 @@
   "errors.history_load_failed": "Failed to load history",
   "errors.history_delete_failed": "Failed to delete image",
   "errors.clipboard_denied": "Clipboard access denied",
+
   "models.hub_title": "Model Hub",
   "models.hub_subtitle": "Select active generation model, architecture and precision variant",
   "models.search_placeholder": "Search models by name or family...",
@@ -390,10 +416,12 @@
   "models.component_picker.added": "Component added to the card",
   "models.component_picker.manual_te": "author/repo::text_encoder/model.safetensors",
   "models.component_picker.manual_vae": "author/repo::vae/file.safetensors",
+
   "controls.quantization": "Quantization",
   "controls.hint_quantfunc_te": "QuantFunc auto-quantizes BF16 to INT4 in RAM",
   "controls.hint_sdcpp_te": "Unsloth GGUF multimodal encoder (--llm)",
   "controls.hint_sdnq_te": "SDNQ Dynamic INT8 Qwen3-VL-8B (CPU Offload)",
+
   "custom_model.title": "Import Custom Model",
   "custom_model.subtitle": "Connect local weights (.gguf / .safetensors) or import directly from Hugging Face Hub",
   "custom_model.name": "Model Name",
@@ -471,8 +499,10 @@
   "custom_model.vae_link_placeholder": "e.g. madebyollin/texture-fix-vae-for-qwen-image-2.1::texture_fix_vae_for_qwen_image_2.1_bf16.safetensors",
   "custom_model.files_hint": "Select model files to add to the card (folder structure is preserved):",
   "custom_model.import_registry": "🤗 Import model into the registry",
+
   "nav.halftone": "Halftone Studio GT",
   "nav.manga": "Manga Screen AI",
+
   "halftone.title": "Halftone Studio GT",
   "halftone.subtitle": "Algorithmic halftone raster, GenTonik layers, lasso selection, satellites & printed manga filter (CPU)",
   "halftone.mode": "Halftone Mode",
@@ -529,6 +559,7 @@
   "halftone.send_to_manga": "Open in Manga Screen AI",
   "halftone.empty_hint": "Upload an image or pick from gallery to configure halftone screentone",
   "halftone.saved_toast": "Halftone Studio result saved to gallery",
+
   "manga.title": "Manga Screen AI",
   "manga.subtitle": "Modular pipeline for converting illustrations into printed manga: AI Edit + Line Art + Manga Finish",
   "manga.mode_lite": "Manga Lite (CPU)",
@@ -575,6 +606,7 @@
   "manga.saved_toast": "Manga Screen AI result saved to gallery",
   "history.reopen_halftone": "Reopen Settings in Halftone Studio",
   "history.reopen_manga": "Reopen Settings in Manga Screen AI",
+
   "queue.title": "GPU is busy",
   "queue.initial": "Waiting for a free GPU...",
   "queue.waiting": "Position {{position}} · jobs waiting: {{total}}",
@@ -584,6 +616,7 @@
   "queue.cancelled": "Job cancelled",
   "queue.cancel_failed": "Could not cancel the job",
   "queue.short": "Queued",
+
   "presence.title": "Connected users",
   "presence.connected": "Online: {{count}}",
   "presence.offline": "Connection monitoring is unavailable",
@@ -592,6 +625,7 @@
   "presence.enabled_toast": "Connection monitoring enabled",
   "presence.disabled_toast": "Connection monitoring disabled",
   "presence.save_error": "Could not save the monitoring setting",
+
   "dock.drag_enable": "Enable free movement",
   "dock.drag_disable": "Disable free movement",
   "dock.drag_on": "Free movement enabled: drag the ⋮⋮ handle",
@@ -599,6 +633,7 @@
   "dock.drag_on_short": "Drag enabled",
   "dock.drag_off_short": "Enable Drag",
   "dock.reset_done": "Dock reset to bottom center",
+
   "manga.queue_waiting": "Waiting in the GPU queue...",
   "settings.guest.banner_desc": "System paths, tokens and engine management are protected by the host. You can generate and view your own works.",
   "settings.guest.my_account": "👤 My guest account",
@@ -996,22 +1031,58 @@
   "templates.empty_dock": "You have no saved templates yet.",
   "templates.save_current_dock": "💾 Save current settings as a template",
   "templates.steps": "{{count}} steps",
-  "inpaint.title": "Inpaint Studio",
-  "inpaint.empty_hint": "Upload an image, pick the brush, and paint over the area you want to replace or modify.",
-  "inpaint.generating": "Generating Inpaint...",
-  "inpaint.settings_title": "Inpainting Parameters",
-  "inpaint.prompt": "Prompt",
-  "inpaint.negative_prompt": "Negative Prompt",
-  "inpaint.strength": "Denoise Strength",
-  "inpaint.mask_blur": "Mask Blur",
-  "inpaint.generate_btn": "Generate Inpaint",
-  "inpaint.ui.tools": "Tools",
-  "inpaint.ui.tool_view": "View",
-  "inpaint.ui.tool_brush": "Brush",
-  "inpaint.ui.tool_eraser": "Eraser",
-  "inpaint.ui.brush_size": "Brush Size",
-  "inpaint.ui.actions": "Actions",
-  "inpaint.ui.clear_mask": "Clear",
-  "inpaint.ui.invert_mask": "Invert",
-  "inpaint.ui.mask_overlay": "Mask"
+
+  "generate.mask.title": "Mask",
+  "generate.mask.hint_load": "Load an image to draw a mask",
+  "generate.mask.hint_empty": "The mask is empty — draw the area to edit",
+  "generate.mask.no_source": "no image",
+  "generate.mask.source": "Source",
+  "generate.mask.from_gallery": "From gallery",
+  "generate.mask.upload": "Upload",
+  "generate.mask.from_canvas": "From canvas",
+  "generate.mask.brush": "Brush",
+  "generate.mask.eraser": "Eraser",
+  "generate.mask.undo": "Undo",
+  "generate.mask.redo": "Redo",
+  "generate.mask.clear": "Clear mask",
+  "generate.mask.invert": "Invert mask",
+  "generate.mask.size": "Size",
+  "generate.mask.softness": "Softness",
+  "generate.mask.coverage": "Coverage",
+  "generate.mask.empty_block": "The mask is empty — draw an area or turn the mask mode off",
+  "generate.mask.model_unsupported": "Model “{{name}}” does not support masks. Supported: {{list}}",
+  "generate.mask.no_capable": "none available",
+  "inpaint.prompt_placeholder": "What should change inside the mask?",
+  "inpaint.generate": "Generate inside the mask",
+  "inpaint.hint.load_image": "Load an image for Inpaint",
+  "inpaint.hint.no_source": "Load an image first",
+  "inpaint.hint.select_mask": "Select a mask layer",
+  "inpaint.hint.empty_mask": "The mask is empty — draw the area to edit",
+  "inpaint.hint.no_prompt": "Enter a prompt",
+  "inpaint.hint.no_model": "Select a model",
+  "inpaint.hint.model_unsupported": "Model “{{name}}” does not support masks. Supported: {{list}}",
+  "inpaint.hint.model_unsupported_short": "This model does not support masks",
+  "inpaint.hint.no_compatible": "none available",
+  "inpaint.hint.switch_model": "Switch to:",
+  "inpaint.hint.source_locked": "The “Source” layer cannot be modified",
+  "inpaint.hint.generation_error": "Generation failed",
+  "inpaint.hint.cancelled": "Generation cancelled",
+  "inpaint.hint.done": "Result layer created",
+  "inpaint.hint.loaded": "Image loaded",
+  "inpaint.layer.source": "Source",
+  "inpaint.layer.mask": "Mask",
+  "inpaint.layer.result": "Result",
+  "inpaint.layer.copy_suffix": "(copy)",
+  "inpaint.layers.title": "Layers",
+  "inpaint.layers.empty": "No layers yet — load an image",
+  "inpaint.layers.add_mask": "Add mask",
+  "inpaint.layers.add_result": "Add result",
+  "inpaint.layers.up": "Move up",
+  "inpaint.layers.down": "Move down",
+  "inpaint.layers.duplicate": "Duplicate",
+  "inpaint.layers.rename": "Rename",
+  "inpaint.layers.delete": "Delete",
+  "inpaint.layers.opacity": "Opacity",
+  "inpaint.layers.rename_prompt": "Layer name",
+  "inpaint.status.coverage": "Mask coverage"
 }

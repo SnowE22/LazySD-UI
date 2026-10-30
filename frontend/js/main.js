@@ -15,6 +15,9 @@ import * as settings from "./modules/settings.js";
 import * as generator from "./modules/generator.js";
 import * as halftone from "./modules/halftone.js";
 import * as manga from "./modules/manga.js";
+import * as maskCore from "./modules/mask-core.js";
+import * as generateMask from "./modules/generate-mask.js";
+import * as inpaint from "./modules/inpaint.js";
 
 export const App = {
   state,
@@ -59,6 +62,8 @@ export const App = {
     try { this.bindEvents(); } catch (e) { console.warn("[init] bindEvents error:", e); }
     try { this.initAllViewportZoomPan(); } catch (e) { console.warn("[init] initAllViewportZoomPan error:", e); }
     try { this.initViewportHudOpacity(); } catch (e) { console.warn("[init] initViewportHudOpacity error:", e); }
+    try { this.initGenMaskUI(); } catch (e) { console.warn("[init] initGenMaskUI error:", e); }
+    try { this.initInpaintStudio(); } catch (e) { console.warn("[init] initInpaintStudio error:", e); }
 
     console.log("[main] Ready. GPU:", this.state.gpuInfo?.name || "not detected");
   },
@@ -197,7 +202,8 @@ export const App = {
     const targetId = (tabName === "img2img" || tabName === "image_edit") ? "tab-generate" : `tab-${tabName}`;
     const activePanel = document.getElementById(targetId);
     if (activePanel) {
-      activePanel.style.display = (targetId === "tab-generate") ? "flex" : "block";
+      const flexPanels = ["tab-generate", "tab-inpaint"];
+      activePanel.style.display = flexPanels.includes(targetId) ? "flex" : "block";
     }
 
     if (tabName === "history") {
@@ -210,6 +216,8 @@ export const App = {
       this.initHalftoneStudio();
     } else if (tabName === "manga") {
       this.initMangaStudio();
+    } else if (tabName === "inpaint") {
+      this.initInpaintStudio();
     }
   },
 
@@ -582,6 +590,9 @@ export const App = {
   ...generator,
   ...halftone,
   ...manga,
+  ...maskCore,
+  ...generateMask,
+  ...inpaint,
 };
 
 // ============================================================

@@ -2255,9 +2255,13 @@ export function openGalleryPicker(targetTool = "halftone", appRef) {
   if (!modal || !grid) return;
 
   if (title) {
-    title.textContent = targetTool === "halftone"
-      ? "Выберите изображение для Halftone Studio GT"
-      : "Выберите изображение для Manga Screen AI";
+    const titles = {
+      halftone: "Выберите изображение для Halftone Studio GT",
+      manga: "Выберите изображение для Manga Screen AI",
+      generate: "Выберите изображение для редактирования по маске",
+      inpaint: "Выберите изображение для Inpaint",
+    };
+    title.textContent = titles[targetTool] || titles.halftone;
   }
 
   const items = app?.state?.historyItems || [];
@@ -2268,7 +2272,7 @@ export function openGalleryPicker(targetTool = "halftone", appRef) {
       const thumbUrl = it.thumb_url || it.image_url || it.url;
       const fullUrl = it.image_url || it.url || thumbUrl;
       return `
-        <div class="gallery-picker-item" onclick="App.selectGalleryPickerItem('${escapeHtml(fullUrl)}', '${escapeHtml(it.filename || '')}')" style="cursor: pointer; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); aspect-ratio: 1; background: var(--bg-surface); transition: transform 0.15s, border-color 0.15s;">
+        <div class="gallery-picker-item" onclick="App.selectGalleryPickerItem('${escapeHtml(fullUrl)}', '${escapeHtml(it.filename || it.name || '')}')" style="cursor: pointer; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); aspect-ratio: 1; background: var(--bg-surface); transition: transform 0.15s, border-color 0.15s;">
           <img src="${thumbUrl}" alt="History item" style="width: 100%; height: 100%; object-fit: cover; display: block;" loading="lazy">
         </div>
       `;
@@ -2291,7 +2295,34 @@ export function selectGalleryPickerItem(url, filename, appRef) {
     loadHalftoneSource(url, filename || "gallery_item.png", app);
   } else if (target === "manga") {
     if (app.loadMangaSource) app.loadMangaSource(url, filename || "gallery_item.png");
+  } else if (target === "generate") {
+    if (app.enableGenMaskWithSource) {
+      const path = resolveGalleryOutputPath(url, filename);
+      app.enableGenMaskWithSource(app, { url, path, name: path || filename || "image.png" });
+    }
+  } else if (target === "inpaint") {
+    if (app.loadInpaintSource) {
+      const path = resolveGalleryOutputPath(url, filename);
+      app.loadInpaintSource(url, path, path || filename || "image.png", app);
+    }
   }
+}
+
+// Resolve the server side path of a gallery item (relative to the output dir).
+export function resolveGalleryOutputPath(url, filename) {
+  if (filename) return filename;
+  if (typeof url === "string") {
+    const marker = "/outputs/";
+    const idx = url.indexOf(marker);
+    if (idx >= 0) {
+      try {
+        return decodeURIComponent(url.slice(idx + marker.length).split("?")[0]);
+      } catch (_) {
+        return url.slice(idx + marker.length).split("?")[0];
+      }
+    }
+  }
+  return "";
 }
 
 export function openHistoryItemInTool(tool, appRef) {

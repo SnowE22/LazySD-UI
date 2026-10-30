@@ -151,8 +151,11 @@
         </button>
 
         <button class="nav-item" data-tab="inpaint">
+
           <span class="nav-icon">🎨</span>
+
           <span class="nav-label" data-i18n="nav.inpaint">Inpaint</span>
+
         </button>
 
       </div>
@@ -241,6 +244,8 @@
 
           <div class="preview-area">
 
+            <button type="button" class="mask-fab" id="gen-mask-fab" onclick="App.toggleGenMask()" title="Редактирование по маске" data-i18n-title="generate.mask.title">🎭</button>
+
             <div class="preview-placeholder" id="preview-placeholder">
 
               <div class="placeholder-icon">🖼</div>
@@ -279,6 +284,10 @@
 
               </div>
 
+              <!-- Mask overlay (Generate) — lives in image coordinates -->
+
+              <canvas id="gen-mask-canvas" class="mask-overlay-canvas" style="display: none;"></canvas>
+
               <div class="preview-toolbar">
 
                 <button class="preview-tool-btn" id="btn-compare-toggle" title="Шторка для сравнения с предыдущим результатом или референсом" onclick="App.toggleCompare()">↔ Сравнить</button>
@@ -293,7 +302,81 @@
 
                 <button class="preview-tool-btn" id="btn-open-output-dir" title="Открыть папку со скачанным / сгенерированным в проводнике Windows" data-i18n-title="preview.open_folder" onclick="openOutputDir()">📂</button>
 
+                <button class="preview-tool-btn" id="gen-mask-toggle" title="Редактирование по маске" data-i18n-title="generate.mask.title" onclick="App.toggleGenMask()">🎭</button>
+
               </div>
+
+            </div>
+
+            <!-- Mask panel (Generate) -->
+
+            <div class="mask-panel" id="gen-mask-panel" style="display: none;">
+
+              <div class="mask-panel-head">
+
+                <span class="mask-panel-title">🎭 <span data-i18n="generate.mask.title">Маска</span></span>
+
+                <button type="button" class="mask-panel-close" onclick="App.toggleGenMask()" title="Выйти из режима маски">✕</button>
+
+              </div>
+
+              <div class="mask-panel-hint" id="gen-mask-hint" style="display: none;">
+
+                <span data-i18n="generate.mask.hint_load">Загрузите изображение, чтобы рисовать маску</span>
+
+                <div class="mask-panel-source-actions">
+
+                  <button type="button" class="mask-mini-btn" onclick="App.openGalleryPicker('generate')" data-i18n="generate.mask.from_gallery">Из галереи</button>
+
+                  <button type="button" class="mask-mini-btn" onclick="document.getElementById('gen-mask-file-input').click()" data-i18n="generate.mask.upload">Загрузить</button>
+
+                  <button type="button" class="mask-mini-btn" onclick="App.useCanvasImageForMask()" data-i18n="generate.mask.from_canvas">С холста</button>
+
+                </div>
+
+              </div>
+
+              <div class="mask-panel-source">
+
+                <span class="mask-panel-label" data-i18n="generate.mask.source">Источник</span>
+
+                <span class="mask-panel-source-name" id="gen-mask-source-name">—</span>
+
+              </div>
+
+              <div class="mask-panel-tools">
+
+                <button type="button" class="mask-tool-btn active" id="gen-mask-tool-brush" title="Кисть" data-i18n-title="generate.mask.brush">🖌</button>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-tool-eraser" title="Ластик" data-i18n-title="generate.mask.eraser">🧽</button>
+
+                <span class="mask-tool-sep"></span>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-undo" onclick="App.undoGenMask()" title="Отменить" data-i18n-title="generate.mask.undo">↶</button>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-redo" onclick="App.redoGenMask()" title="Повторить" data-i18n-title="generate.mask.redo">↷</button>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-clear" onclick="App.clearGenMask()" title="Очистить маску" data-i18n-title="generate.mask.clear">🗑</button>
+
+                <button type="button" class="mask-tool-btn" id="gen-mask-invert" onclick="App.invertGenMask()" title="Инвертировать маску" data-i18n-title="generate.mask.invert">⇅</button>
+
+              </div>
+
+              <div class="mask-panel-sliders">
+
+                <label><span data-i18n="generate.mask.size">Размер</span> <span id="gen-mask-size-val">64</span></label>
+
+                <input type="range" id="gen-mask-size" min="4" max="400" step="1" value="64" oninput="App.setGenMaskBrushSize(this.value)">
+
+                <label><span data-i18n="generate.mask.softness">Мягкость</span> <span id="gen-mask-softness-val">50%</span></label>
+
+                <input type="range" id="gen-mask-softness" min="0" max="1" step="0.05" value="0.5" oninput="App.setGenMaskSoftness(this.value)">
+
+              </div>
+
+              <div class="mask-panel-status" id="gen-mask-status"></div>
+
+              <input type="file" id="gen-mask-file-input" accept="image/png,image/jpeg,image/webp" style="display: none;">
 
             </div>
 
@@ -1064,6 +1147,18 @@
 
                 </button>
 
+                <div style="margin-top: 10px;">
+
+                  <button type="button" class="history-action-btn" id="inspector-gen-mask-btn" onclick="App.toggleGenMask()" style="height: 32px; font-size: 11.5px; width: 100%;">
+
+                    <span data-i18n="generate.mask.title">🎭 Маска</span>
+
+                  </button>
+
+                  <div class="inspector-hint" id="inspector-gen-mask-hint" data-i18n="generate.mask.hint_load">Загрузите изображение, чтобы рисовать маску</div>
+
+                </div>
+
               </div>
 
             </details>
@@ -1253,6 +1348,184 @@
               </div>
 
             </details>
+
+          </div>
+
+        </aside>
+
+      </section>
+
+      <!-- ===== Tab: Inpaint (layered workspace) ===== -->
+
+      <section class="tab-panel inpaint-workspace" id="tab-inpaint" style="display: none;">
+
+        <div class="inpaint-canvas-area" id="inpaint-canvas-area">
+
+          <div class="inpaint-canvas-wrap" id="inpaint-canvas-wrap">
+
+            <canvas id="inpaint-composite" width="1024" height="1024"></canvas>
+
+            <div class="inpaint-mask-stack" id="inpaint-mask-stack"></div>
+
+          </div>
+
+          <div class="inpaint-brush-cursor" id="inpaint-brush-cursor" style="display: none;"></div>
+
+          <div class="viewport-zoom-hud" id="inpaint-zoom-hud">
+
+            <button type="button" class="zoom-hud-btn" onclick="App.stepViewportZoom('inpaint', -1)" title="Отдалить">−</button>
+
+            <span class="zoom-hud-label" id="inpaint-zoom-label" onclick="App.resetViewportZoom('inpaint')" title="Нажмите для сброса масштаба (100%)">🔍 100%</span>
+
+            <button type="button" class="zoom-hud-btn" onclick="App.stepViewportZoom('inpaint', 1)" title="Приблизить">+</button>
+
+            <button type="button" class="zoom-hud-reset" onclick="App.resetViewportZoom('inpaint')" title="Вписать в окно">⤢</button>
+
+          </div>
+
+          <div class="inpaint-empty-hint" id="inpaint-empty-hint">
+
+            <div class="placeholder-icon">🖼</div>
+
+            <div class="placeholder-text" data-i18n="inpaint.hint.load_image">Загрузите изображение для Inpaint</div>
+
+            <div class="inpaint-empty-actions">
+
+              <button type="button" class="mask-mini-btn" onclick="App.openGalleryPicker('inpaint')" data-i18n="generate.mask.from_gallery">Из галереи</button>
+
+              <button type="button" class="mask-mini-btn" onclick="document.getElementById('inpaint-file-input').click()" data-i18n="generate.mask.upload">Загрузить</button>
+
+              <button type="button" class="mask-mini-btn" onclick="App.useCanvasImageInInpaint()" data-i18n="generate.mask.from_canvas">С холста</button>
+
+            </div>
+
+            <input type="file" id="inpaint-file-input" accept="image/png,image/jpeg,image/webp" style="display: none;">
+
+          </div>
+
+        </div>
+
+        <aside class="inpaint-inspector">
+
+          <div class="inpaint-inspector-head">
+
+            <span class="inpaint-title">🎨 <span data-i18n="nav.inpaint">Inpaint</span></span>
+
+            <span class="inpaint-status" id="inpaint-status"></span>
+
+          </div>
+
+          <div class="inpaint-prompt-block">
+
+            <textarea id="inpaint-prompt" rows="3" data-i18n-placeholder="inpaint.prompt_placeholder" placeholder="Что изменить внутри маски?"></textarea>
+
+            <div class="inpaint-params">
+
+              <select id="inpaint-model-select" title="Модель" onchange="App.updateInpaintModelWarning()"></select>
+
+              <input type="number" id="inpaint-steps" value="4" min="1" max="150" title="Steps">
+
+              <input type="number" id="inpaint-cfg" value="1.0" step="0.1" min="0" max="30" title="CFG">
+
+              <input type="text" id="inpaint-seed" placeholder="seed" title="Seed">
+
+              <select id="inpaint-sampler" title="Sampler">
+
+                <option value="euler">euler</option>
+
+                <option value="dpm++2m">dpm++2m</option>
+
+                <option value="heun">heun</option>
+
+                <option value="unipc">unipc</option>
+
+              </select>
+
+            </div>
+
+            <div class="inpaint-model-warning" id="inpaint-model-warning" style="display: none;"></div>
+
+            <button type="button" class="inpaint-generate-btn" id="inpaint-generate-btn" onclick="App.generateInpaint()">
+
+              <span data-i18n="inpaint.generate">Сгенерировать в маске</span>
+
+            </button>
+
+            <div class="inpaint-progress" id="inpaint-progress" style="display: none;"></div>
+
+          </div>
+
+          <div class="inpaint-tools-block">
+
+            <div class="mask-panel-tools">
+
+              <button type="button" class="mask-tool-btn active" id="inpaint-tool-brush" title="Кисть" data-i18n-title="generate.mask.brush" onclick="App.setInpaintTool('brush')">🖌</button>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-tool-eraser" title="Ластик" data-i18n-title="generate.mask.eraser" onclick="App.setInpaintTool('eraser')">🧽</button>
+
+              <span class="mask-tool-sep"></span>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-undo" onclick="App.undoInpaint()" title="Отменить" data-i18n-title="generate.mask.undo">↶</button>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-redo" onclick="App.redoInpaint()" title="Повторить" data-i18n-title="generate.mask.redo">↷</button>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-clear" onclick="App.clearInpaintMask()" title="Очистить маску" data-i18n-title="generate.mask.clear">🗑</button>
+
+              <button type="button" class="mask-tool-btn" id="inpaint-invert" onclick="App.invertInpaintMask()" title="Инвертировать маску" data-i18n-title="generate.mask.invert">⇅</button>
+
+            </div>
+
+            <div class="mask-panel-sliders">
+
+              <label><span data-i18n="generate.mask.size">Размер</span> <span id="inpaint-brush-size-val">64</span></label>
+
+              <input type="range" id="inpaint-brush-size" min="4" max="400" step="1" value="64" oninput="App.setInpaintBrushSize(this.value)">
+
+              <label><span data-i18n="generate.mask.softness">Мягкость</span> <span id="inpaint-softness-val">50%</span></label>
+
+              <input type="range" id="inpaint-softness" min="0" max="1" step="0.05" value="0.5" oninput="App.setInpaintSoftness(this.value)">
+
+            </div>
+
+          </div>
+
+          <div class="inpaint-layers-block">
+
+            <div class="inpaint-layers-head">
+
+              <span data-i18n="inpaint.layers.title">Слои</span>
+
+              <div class="inpaint-layers-actions">
+
+                <button type="button" class="mask-tool-btn" onclick="App.addInpaintMaskLayer()" title="Добавить маску" data-i18n-title="inpaint.layers.add_mask">🎭+</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.addInpaintResultLayer()" title="Добавить результат" data-i18n-title="inpaint.layers.add_result">✨+</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.moveInpaintLayer(App.getInpaintState().activeLayerId, 'up')" title="Выше" data-i18n-title="inpaint.layers.up">↑</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.moveInpaintLayer(App.getInpaintState().activeLayerId, 'down')" title="Ниже" data-i18n-title="inpaint.layers.down">↓</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.duplicateInpaintLayer(App.getInpaintState().activeLayerId)" title="Дублировать" data-i18n-title="inpaint.layers.duplicate">⧉</button>
+
+                <button type="button" class="mask-tool-btn" onclick="App.renameInpaintLayer(App.getInpaintState().activeLayerId)" title="Переименовать" data-i18n-title="inpaint.layers.rename">✎</button>
+
+                <button type="button" class="mask-tool-btn" id="inpaint-layer-delete" onclick="App.removeInpaintLayer(App.getInpaintState().activeLayerId)" title="Удалить" data-i18n-title="inpaint.layers.delete">🗑</button>
+
+              </div>
+
+            </div>
+
+            <div class="inpaint-layers-list" id="inpaint-layers-list"></div>
+
+            <div class="inpaint-layer-opacity-row">
+
+              <label data-i18n="inpaint.layers.opacity">Непрозрачность</label>
+
+              <input type="range" id="inpaint-layer-opacity" min="0" max="1" step="0.01" value="1" oninput="App.setInpaintLayerOpacity(App.getInpaintState().activeLayerId, this.value)">
+
+              <span id="inpaint-layer-opacity-num">1.00</span>
+
+            </div>
 
           </div>
 
@@ -4208,258 +4481,6 @@
 
       </section>
 
-<!-- ===== Tab: Inpaint Studio ===== -->
-<section class="tab-panel studio-workspace" id="tab-inpaint" style="display: none;">
-  <div class="studio-layout">
-    <!-- Left Tool Rail -->
-    <aside class="studio-left-tools" id="inpaint-left-tools">
-      <div class="studio-left-group">
-        <div class="studio-left-label" data-i18n="inpaint.ui.tools">Инструменты</div>
-        <button type="button" class="studio-tool-btn" id="inpaint-tool-view" onclick="App.setInpaintTool('view')" title="Просмотр и панорама холста">
-          <span class="studio-tool-icon">👁</span>
-          <span class="studio-tool-text" data-i18n="inpaint.ui.tool_view">Просмотр</span>
-        </button>
-        <button type="button" class="studio-tool-btn active" id="inpaint-tool-brush" onclick="App.setInpaintTool('brush')" title="Кисть маски">
-          <span class="studio-tool-icon">🖌</span>
-          <span class="studio-tool-text" data-i18n="inpaint.ui.tool_brush">Кисть</span>
-        </button>
-        <button type="button" class="studio-tool-btn" id="inpaint-tool-eraser" onclick="App.setInpaintTool('eraser')" title="Ластик маски">
-          <span class="studio-tool-icon">🧹</span>
-          <span class="studio-tool-text" data-i18n="inpaint.ui.tool_eraser">Ластик</span>
-        </button>
-      </div>
-      <div class="studio-left-divider"></div>
-      <div class="studio-left-group">
-        <div class="studio-left-label" data-i18n="inpaint.ui.brush_size">Размер кисти</div>
-        <div style="display: flex; align-items: center; gap: 8px; padding: 0 4px;">
-          <input type="range" id="inpaint-brush-size" min="4" max="150" value="32" oninput="App.setInpaintBrushSize(this.value)" style="flex: 1;">
-          <span id="inpaint-brush-val" style="font-size: 11px; font-weight: 600; color: var(--text-dim); min-width: 32px;">32px</span>
-        </div>
-      </div>
-      <div class="studio-left-divider"></div>
-      <div class="studio-left-group">
-        <div class="studio-left-label" data-i18n="inpaint.ui.actions">Действия</div>
-        <button type="button" class="studio-tool-btn" onclick="App.clearInpaintMask()" title="Очистить маску">
-          <span class="studio-tool-icon">🗑️</span>
-          <span class="studio-tool-text" data-i18n="inpaint.ui.clear_mask">Очистить</span>
-        </button>
-        <button type="button" class="studio-tool-btn" onclick="App.invertInpaintMask()" title="Инвертировать маску">
-          <span class="studio-tool-icon">🔄</span>
-          <span class="studio-tool-text" data-i18n="inpaint.ui.invert_mask">Инвертировать</span>
-        </button>
-      </div>
-      <div class="studio-left-divider"></div>
-      <div class="studio-left-group">
-        <label class="studio-left-check" title="Показать полупрозрачную накладку маски">
-          <input type="checkbox" id="inpaint-show-mask" checked onchange="App.toggleInpaintMaskOverlay(this.checked)">
-          <span data-i18n="inpaint.ui.mask_overlay">Маска</span>
-        </label>
-      </div>
-    </aside>
-
-    <!-- Center Stage -->
-    <div class="studio-stage">
-      <div class="studio-toolbar">
-        <div class="studio-toolbar-left">
-          <span class="studio-badge-title">🎨 <span data-i18n="inpaint.title">Inpaint Studio</span></span>
-          <input type="file" id="inpaint-file-input" accept=".png,.jpg,.jpeg,.webp" style="display: none;" onchange="App.onInpaintFileUpload(event)">
-          <button type="button" class="studio-btn" onclick="document.getElementById('inpaint-file-input').click()">📂 <span data-i18n="halftone.upload_btn">Загрузить файл</span></button>
-          <button type="button" class="studio-btn" onclick="App.openGalleryPicker('inpaint')">🖼 <span data-i18n="halftone.pick_gallery_btn">Из галереи</span></button>
-          <button type="button" class="studio-btn" onclick="App.useCanvasImageInTool('inpaint')">✨ <span data-i18n="halftone.use_current_btn">С холста</span></button>
-          <span class="studio-meta-pill" id="inpaint-meta-info">—</span>
-        </div>
-        <div class="studio-toolbar-right">
-          <button type="button" class="studio-btn" id="inpaint-sharp-btn" onclick="App.toggleInpaintSharpness()" title="Чёткость при зуме (Pixel-sharp)">🔬 <span id="inpaint-sharp-label">Чётко</span></button>
-          <button type="button" class="studio-btn" id="inpaint-compare-btn" onclick="App.toggleInpaintCompare()" title="Показать оригинал / результат">↔ <span data-i18n="halftone.compare_hold">До / После</span></button>
-          <button type="button" class="studio-btn" onclick="App.downloadInpaintPng()">⬇ <span data-i18n="halftone.download_png">Скачать PNG</span></button>
-        </div>
-      </div>
-
-      <div class="studio-canvas-area" id="inpaint-dropzone">
-        <div class="studio-empty-state" id="inpaint-empty-state">
-          <div style="font-size: 42px; margin-bottom: 10px;">🎨</div>
-          <div style="font-size: 15px; font-weight: 600; color: var(--text-bright); margin-bottom: 6px;" data-i18n="inpaint.title">Inpaint Studio</div>
-          <div style="font-size: 12.5px; color: var(--text-dim); max-width: 440px;" data-i18n="inpaint.empty_hint">Загрузите изображение, выберите кисть и закрасьте область, которую хотите изменить.</div>
-        </div>
-        <div class="studio-preview-wrap" id="inpaint-preview-wrap" style="display: none;">
-          <img id="inpaint-preview-img" alt="Inpaint Preview">
-          <canvas id="inpaint-mask-canvas" class="studio-mask-canvas"></canvas>
-          <div class="studio-compare-badge" id="inpaint-compare-badge" style="display: none;" data-i18n="manga.compare_original">ОРИГИНАЛ (ДО)</div>
-          <div class="studio-loading-overlay" id="inpaint-loading-overlay" style="display: none;">
-            <div class="gen-spinner-wrap compact">
-              <div class="gen-spinner-ring"></div>
-              <div class="gen-spinner-core">🎨</div>
-            </div>
-            <div class="studio-loading-text" id="inpaint-loading-text" data-i18n="inpaint.generating">Генерация Inpaint...</div>
-          </div>
-        </div>
-        <div class="viewport-zoom-hud" id="inpaint-zoom-hud">
-          <button type="button" class="zoom-hud-btn" onclick="App.stepViewportZoom('inpaint', -1)">−</button>
-          <span class="zoom-hud-label" id="inpaint-zoom-label" onclick="App.resetViewportZoom('inpaint')">🔍 100%</span>
-          <button type="button" class="zoom-hud-btn" onclick="App.stepViewportZoom('inpaint', 1)">+</button>
-        </div>
-        <div class="viewport-scrollbar-x" id="inpaint-scrollbar-x"><div class="viewport-scrollbar-thumb" id="inpaint-scrollbar-thumb-x"></div></div>
-        <div class="viewport-scrollbar-y" id="inpaint-scrollbar-y"><div class="viewport-scrollbar-thumb" id="inpaint-scrollbar-thumb-y"></div></div>
-      </div>
-    </div>
-
-    <!-- Right Inspector Controls -->
-    <!-- RIGHT SIDEBAR: INPAINT TOPAZ-STYLE INSPECTOR -->
-<aside class="topaz-inspector" id="inpaint-inspector">
-  <div class="inspector-header">
-    <span class="inspector-title" data-i18n="inspector.title">🎛️ Инспектор параметров</span>
-    <button type="button" class="icon-btn" onclick="App.toggleInspector()" data-i18n-title="inspector.collapse" title="Свернуть инспектор" style="width: 24px; height: 24px; font-size: 12px;">✕</button>
-  </div>
-
-  <div class="inspector-scroll">
-    <!-- Accordion 1: Model & Backend -->
-    <details class="inspector-accordion" open>
-      <summary class="inspector-summary">
-        <span data-i18n="inspector.section.model_backend">📦 Модель и бэкенд</span>
-      </summary>
-      <div class="inspector-section-body controls-row">
-        <div class="control-group" style="width: 100%;">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <label data-i18n="controls.model">Модель</label>
-            <a href="javascript:void(0)" onclick="App.openCustomModelModal()" class="inspector-add-link" data-i18n="inspector.add_model">+ Добавить модель</a>
-          </div>
-          <div class="model-picker-trigger-wrap">
-            <button type="button" class="model-picker-trigger" id="inpaint-model-picker-trigger" onclick="App.openModelPickerModal()">
-              <div class="model-trigger-info">
-                <span class="model-trigger-name" id="inpaint-model-trigger-name">—</span>
-                <span class="model-trigger-sub" id="inpaint-model-trigger-sub">—</span>
-              </div>
-              <span class="model-trigger-badge" id="inpaint-model-trigger-badge">⚡ SD.CPP</span>
-            </button>
-          </div>
-          <select id="inpaint-model-select" style="display: none;"></select>
-        </div>
-
-        <div class="control-group" id="inpaint-backend-group" style="width: 100%;">
-          <label id="inpaint-backend-label" data-i18n="controls.variant_backend">Квантование / Бэкенд</label>
-          <select id="inpaint-variant-select"></select>
-        </div>
-
-        <div class="control-group" id="inpaint-text-encoder-group" style="width: 100%;">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <label data-i18n="controls.text_encoder">Текстовый энкодер</label>
-            <a href="javascript:void(0)" style="font-size: 11px; color: var(--accent); text-decoration: none;" onclick="App.toggleCustomTeInput(event)" data-i18n="controls.custom_path">Свой путь</a>
-          </div>
-          <select id="inpaint-text-encoder-select"></select>
-        </div>
-
-        <div class="control-group" id="inpaint-vae-group" style="width: 100%;">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <label data-i18n="controls.vae">VAE</label>
-            <a href="javascript:void(0)" style="font-size: 11px; color: var(--accent); text-decoration: none;" onclick="App.toggleCustomVaeInput(event)" data-i18n="controls.custom_path">Свой путь</a>
-          </div>
-          <select id="inpaint-vae-select"></select>
-        </div>
-      </div>
-    </details>
-
-    <!-- Accordion 2: LoRA Stacking -->
-    <details class="inspector-accordion" id="inpaint-lora-accordion">
-      <summary class="inspector-summary">
-        <span data-i18n="inspector.section.lora_prefix">🎨 LoRA-стекинг</span> (<span id="inpaint-lora-count">0</span>)
-      </summary>
-      <div class="inspector-section-body">
-        <div class="lora-inspector-wrap" id="inpaint-lora-list">
-          <div style="font-size: 11px; color: var(--text-dim); text-align: center; padding: 6px 0;" data-i18n="inspector.no_loras">Нет подключенных LoRA</div>
-        </div>
-        <div style="display: flex; gap: 6px; margin-top: 8px;">
-          <button type="button" class="dock-mini-btn accent" onclick="App.openLoraModal()" style="width: 100%; justify-content: center; height: 30px;" data-i18n="inspector.manage_loras">+ Управление LoRA</button>
-        </div>
-      </div>
-    </details>
-
-    <!-- Accordion 3: Inpaint Parameters -->
-    <details class="inspector-accordion" open id="inpaint-params-accordion">
-      <summary class="inspector-summary">
-        <span data-i18n="inpaint.title">🎨 Параметры Inpaint</span>
-      </summary>
-      <div class="inspector-section-body">
-        <div class="control-group" style="width: 100%;">
-          <label data-i18n="inpaint.prompt">Промпт</label>
-          <textarea id="inpaint-prompt" class="studio-textarea" rows="3" placeholder="Что должно быть на месте маски..." style="width: 100%; resize: vertical;"></textarea>
-        </div>
-        <div class="control-group" style="width: 100%;">
-          <label data-i18n="inpaint.negative_prompt">Негативный промпт</label>
-          <textarea id="inpaint-negative-prompt" class="studio-textarea" rows="2" placeholder="Что исключить..." style="width: 100%; resize: vertical;"></textarea>
-        </div>
-        <div class="control-group" style="width: 100%;">
-          <div class="control-label-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-            <label style="margin: 0;" data-i18n="inpaint.strength">Сила изменения (Denoise)</label>
-            <span id="inpaint-strength-val" style="font-size: 11px; font-weight: 600; color: var(--text-dim);">0.75</span>
-          </div>
-          <div class="slider-input-row" style="display: flex; gap: 8px; align-items: center;">
-            <input type="range" id="inpaint-strength" min="0.05" max="1.0" step="0.05" value="0.75" oninput="document.getElementById('inpaint-strength-val').textContent = this.value" style="flex: 1;">
-          </div>
-        </div>
-        <div class="control-group" style="width: 100%;">
-          <div class="control-label-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-            <label style="margin: 0;" data-i18n="inpaint.mask_blur">Размытие краёв (Mask Blur)</label>
-            <span id="inpaint-mask-blur-val" style="font-size: 11px; font-weight: 600; color: var(--text-dim);">4 px</span>
-          </div>
-          <div class="slider-input-row" style="display: flex; gap: 8px; align-items: center;">
-            <input type="range" id="inpaint-mask-blur" min="0" max="64" step="1" value="4" oninput="document.getElementById('inpaint-mask-blur-val').textContent = this.value + ' px'" style="flex: 1;">
-          </div>
-        </div>
-        <div class="control-group" style="width: 100%; margin-top: 6px;">
-          <label data-i18n="inpaint.area_mode">Область обработки (Inpaint Area)</label>
-          <select id="inpaint-area-mode" class="studio-select" style="width: 100%;">
-            <option value="masked_only" selected>🎯 Только маска (Crop & Stitch, 8GB Safe)</option>
-            <option value="whole_image">🖼️ Всё изображение (Whole Image)</option>
-          </select>
-        </div>
-        <div class="control-group" style="width: 100%; margin-top: 6px;" id="inpaint-window-size-group">
-          <label data-i18n="inpaint.window_size">Размер окна (Crop Window)</label>
-          <select id="inpaint-window-size" class="studio-select" style="width: 100%;">
-            <option value="512">512 × 512 px (Ультра-быстро, минимум VRAM)</option>
-            <option value="768" selected>768 × 768 px (Рекомендуется для RTX 3070 Ti)</option>
-            <option value="1024">1024 × 1024 px (Максимальная детализация)</option>
-          </select>
-        </div>
-      </div>
-    </details>
-
-    <!-- Accordion 4: Generation Settings -->
-    <details class="inspector-accordion" open>
-      <summary class="inspector-summary">
-        <span data-i18n="inspector.section.generation">⚙️ Параметры генерации</span>
-      </summary>
-      <div class="inspector-section-body">
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%;">
-          <div class="control-group" style="min-width: 0;">
-            <label data-i18n="controls.steps">Шаги (Steps)</label>
-            <input type="number" id="inpaint-steps" value="20" min="1" max="50">
-          </div>
-          <div class="control-group" style="min-width: 0;">
-            <label data-i18n="controls.cfg">CFG</label>
-            <input type="number" id="inpaint-cfg" value="7.0" min="1.0" max="20.0" step="0.5">
-          </div>
-        </div>
-        <div class="control-group" style="width: 100%; margin-top: 8px;">
-          <label data-i18n="controls.seed">Сид (Seed)</label>
-          <div style="display: flex; gap: 6px;">
-            <input type="text" id="inpaint-seed" value="-1" style="flex: 1;">
-            <button type="button" class="icon-btn" onclick="document.getElementById('inpaint-seed').value='-1';" data-i18n-title="inspector.seed_reset" title="Сбросить на случайный сид">🎲</button>
-          </div>
-        </div>
-      </div>
-    </details>
-  </div>
-
-  <!-- Generate Button Fixed at Bottom -->
-  <div style="padding: 12px; border-top: 1px solid var(--border); background: var(--bg-secondary); flex-shrink: 0;">
-    <button type="button" class="btn primary" id="inpaint-generate-btn" onclick="App.runInpaint()" style="width: 100%; height: 42px; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px;">
-      🎨 <span data-i18n="inpaint.generate_btn">Сгенерировать Inpaint</span>
-    </button>
-  </div>
-</aside>
-  </div>
-</section>
-
     </main>
 
   </div>
@@ -4470,9 +4491,7 @@
 
   <script src="/js/dropzone.js?v=20261022_01"></script>
 
-  <script src="/js/app.js?v=20261030_01"></script>
-
-  <script src="/js/modules/inpaint.js?v=20261030_01"></script>
+  <script src="/js/app.js?v=20261030_06"></script>
 
   <script>
 

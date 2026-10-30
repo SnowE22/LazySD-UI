@@ -30,6 +30,9 @@ def test_es6_modules():
         "/js/modules/generator.js",
         "/js/modules/halftone.js",
         "/js/modules/manga.js",
+        "/js/modules/mask-core.js",
+        "/js/modules/generate-mask.js",
+        "/js/modules/inpaint.js",
     ]
 
     for m in modules:

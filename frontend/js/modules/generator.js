@@ -4,6 +4,16 @@
    ============================================================ */
 
 import { apiGet, apiPost, apiDelete, apiUpload, toast, escapeHtml } from "../api.js";
+import { applyGenMaskParams, getMaskCapableModels } from "./generate-mask.js";
+
+function t(key, fallback, vars) {
+  const fn = typeof window !== "undefined" ? window.t : null;
+  if (typeof fn === "function") {
+    const value = fn(key, vars || {});
+    if (value && value !== key) return value;
+  }
+  return fallback || key;
+}
 
 export async function onGenerate(appRef) {
   const app = appRef || window.App;
@@ -125,6 +135,24 @@ export async function onGenerate(appRef) {
       const vaeSelect = document.getElementById("vae-select");
       if (vaeSelect && vaeSelect.value) params.vae = vaeSelect.value;
     }
+  }
+
+  // Mask editing (Generate): the mask defines the edited region, everything
+  // outside of it is restored by the backend compositor.
+  const maskStatus = applyGenMaskParams(app, params);
+  if (maskStatus === "empty") {
+    toast("warning", t("generate.mask.empty_block", "Маска пуста — нарисуйте область или отключите режим «Маска»"));
+    return;
+  }
+  if (maskStatus === "ok") {
+    const maskModel = (app.state.models || []).find((m) => m.id === params.model_id);
+    if (maskModel && !maskModel.supports_mask) {
+      const capable = getMaskCapableModels(app);
+      const names = capable.map((m) => m.name).join(", ") || t("generate.mask.no_capable", "нет в наличии");
+      toast("error", t("generate.mask.model_unsupported", `Модель «${maskModel.name}» не поддерживает маску. Поддерживают: ${names}`, { name: maskModel.name, list: names }));
+      return;
+    }
+    params.init_image_strength = 1.0;
   }
 
   setGenerating(true, app);
