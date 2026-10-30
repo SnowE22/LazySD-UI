@@ -8457,6 +8457,7 @@ def create_app() -> FastAPI:
 
 
         shared = bool(body.get("shared", default_shared))
+        settings = get_settings()
 
 
 
@@ -8605,7 +8606,7 @@ def create_app() -> FastAPI:
                 init_file_path.write_bytes(img_bytes)
                 init_image_path = f"uploads/{init_fname}"
             except Exception as e:
-                logger.warning(f"[api_generate] Failed to decode ref_image data URL: {e}")
+                print(f"[api_generate] Failed to decode ref_image data URL: {e}", file=sys.stderr)
 
         # Process inpainting mask if provided
         mask_image_path = None
@@ -8636,7 +8637,7 @@ def create_app() -> FastAPI:
                         mask_pil.save(saved_mask_path)
                         mask_image_path = saved_mask_path
             except Exception as e:
-                logger.warning(f"[api_generate] Failed to decode/save inpaint mask: {e}")
+                print(f"[api_generate] Failed to decode/save inpaint mask: {e}", file=sys.stderr)
 
 
 
