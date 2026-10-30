@@ -1,5 +1,49 @@
 (function() {
   'use strict';
+
+  const getApp = () => window.App || {};
+
+  async function apiPost(path, body = null, retries = 0) {
+    const a = getApp();
+    if (typeof a.apiPost === 'function') {
+      return a.apiPost(path, body, retries);
+    }
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : null
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  async function apiGet(path, retries = 2) {
+    const a = getApp();
+    if (typeof a.apiGet === 'function') {
+      return a.apiGet(path, retries);
+    }
+    const res = await fetch(path);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  function showToast(kind, message) {
+    const a = getApp();
+    if (typeof a.toast === 'function') {
+      a.toast(kind, message);
+    } else if (typeof window.toast === 'function') {
+      window.toast(kind, message);
+    } else {
+      console.log(`[${kind}] ${message}`);
+    }
+  }
+
   
   const app = window.App || {};
   if (!app.state) app.state = {};
@@ -191,7 +235,7 @@
       if (canvas) canvas.classList.toggle('inpaint-sharp', isSharp);
       if (btn) btn.classList.toggle('active', isSharp);
       if (label) label.textContent = isSharp ? 'Резко (Вкл)' : 'Чётко';
-      (window.toast || app.toast)('info', isSharp ? 'Пиксельная чёткость включена (без размытия при зуме)' : 'Автоматическое сглаживание');
+      showToast('info', isSharp ? 'Пиксельная чёткость включена (без размытия при зуме)' : 'Автоматическое сглаживание');
     },
 
     setInpaintTool(tool) {
@@ -245,9 +289,21 @@
       if (canvas) canvas.style.display = show ? 'block' : 'none';
     },
 
-    onInpaintFileUpload(event) {
+    async onInpaintFileUpload(event) {
       const file = event?.target?.files?.[0];
       if (!file) return;
+      showToast('info', 'Загрузка изображения...');
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        if (res.ok) {
+          const data = await res.json();
+          app.state.inpaint.sourcePath = data.path;
+        }
+      } catch (err) {
+        console.warn('Direct upload error:', err);
+      }
       const reader = new FileReader();
       reader.onload = (e) => app.loadInpaintSource(e.target.result, file.name);
       reader.readAsDataURL(file);
@@ -289,7 +345,7 @@
       const st = app.state.inpaint;
 
       if (!st.sourceDataUrl) {
-        (window.toast || app.toast)('warning', 'Сначала загрузите изображение');
+        showToast('warning', 'Сначала загрузите изображение');
         return;
       }
 
@@ -314,21 +370,28 @@
       if (progressText) progressText.textContent = 'Инициализация генерации...';
 
       try {
-        const res = await (app.apiPost || window.apiPost)('/api/generate', {
+        const lorasList = (app.state.activeLoras && app.state.activeLoras.length > 0)
+          ? app.state.activeLoras.map(l => ({ name: l.name, strength: parseFloat(l.strength || 1.0) }))
+          : (app.state.loras || []);
+
+        const res = await apiPost('/api/generate', {
           mode: 'inpaint',
+          model_id: model,
+          variant_id: variant,
+          prompt,
+          negative_prompt,
+          init_image_path: st.sourcePath || undefined,
           ref_image: st.sourceDataUrl,
+          init_image_strength: strength,
           mask_image: maskDataUrl,
           mask_blur: mask_blur,
           invert_mask: st.invertMask,
-          prompt,
-          negative_prompt,
-          model,
-          variant,
-          strength,
+          width: canvas ? canvas.width : 1024,
+          height: canvas ? canvas.height : 1024,
           steps,
           cfg_scale,
           seed,
-          loras: app.state.loras || []
+          loras: lorasList
         });
 
         const jobId = res?.job_id;
@@ -336,7 +399,7 @@
 
         const pollInterval = setInterval(async () => {
           try {
-            const status = await (app.apiGet || window.apiGet)(`/api/jobs/${jobId}`);
+            const status = await apiGet(`/api/jobs/${jobId}`);
             if (progressText && status) {
               const step = status.step || 0;
               const total = status.total_steps || steps;
@@ -354,16 +417,16 @@
               if (canvas) canvas.style.display = 'none';
               const showMaskChk = document.getElementById('inpaint-show-mask');
               if (showMaskChk) showMaskChk.checked = false;
-              (window.toast || app.toast)('success', 'Inpaint успешно сгенерирован! ✓');
+              showToast('success', 'Inpaint успешно сгенерирован! ✓');
               if (app.loadHistory) app.loadHistory();
             } else if (status.status === 'error') {
               clearInterval(pollInterval);
               if (overlay) overlay.style.display = 'none';
-              (window.toast || app.toast)('error', 'Ошибка: ' + (status.error || status.message || ''));
+              showToast('error', 'Ошибка: ' + (status.error || status.message || ''));
             } else if (status.status === 'cancelled') {
               clearInterval(pollInterval);
               if (overlay) overlay.style.display = 'none';
-              (window.toast || app.toast)('info', 'Генерация отменена');
+              showToast('info', 'Генерация отменена');
             }
           } catch (err) {
             console.error('[inpaint] poll error:', err);
@@ -371,7 +434,7 @@
         }, 250);
       } catch (e) {
         if (overlay) overlay.style.display = 'none';
-        (window.toast || app.toast)('error', 'Ошибка запуска: ' + e.message);
+        showToast('error', 'Ошибка запуска: ' + e.message);
       }
     },
 

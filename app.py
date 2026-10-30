@@ -8469,61 +8469,21 @@ def create_app() -> FastAPI:
 
 
         try:
-
-
-
-            model_id = body["model_id"]
-
-
-
-            prompt = body["prompt"]
-
-
-
-            variant_id = body.get("variant_id")
-
-
-
+            model_id = body.get("model_id") or body.get("model")
+            if not model_id:
+                raise KeyError("model_id")
+            prompt = body.get("prompt", "")
+            variant_id = body.get("variant_id") or body.get("variant")
             raw_seed = body.get("seed")
-
-
-
             seed = int(raw_seed) if raw_seed not in (None, "", "random") else None
-
-
-
             width = int(body.get("width", 1024))
-
-
-
             height = int(body.get("height", 1024))
-
-
-
             steps = int(body.get("steps", 4))
-
-
-
             backend = body.get("backend", "lighting")
-
-
-
             raw_init_path = body.get("init_image_path")
-
-
-
-            init_image_strength = float(body.get("init_image_strength", 0.7))
-
-
-
+            init_image_strength = float(body.get("init_image_strength") or body.get("strength", 0.7))
             raw_mask_image = body.get("mask_image")
-
-
-
             mask_blur_val = int(body.get("mask_blur", 4))
-
-
-
             invert_mask_flag = bool(body.get("invert_mask", False))
 
 
@@ -8627,6 +8587,25 @@ def create_app() -> FastAPI:
                 init_image_path = norm
 
 
+
+        # Fallback: if init_image_path is not given, but ref_image or init_image is passed as base64 Data URL
+        raw_ref_image = body.get("ref_image") or body.get("init_image")
+        if not init_image_path and raw_ref_image and isinstance(raw_ref_image, str) and raw_ref_image.startswith("data:image"):
+            try:
+                import base64
+                import uuid
+                from PIL import Image
+
+                header, encoded = raw_ref_image.split(",", 1)
+                img_bytes = base64.b64decode(encoded)
+                uploads_dir = settings.output_dir / "uploads"
+                uploads_dir.mkdir(parents=True, exist_ok=True)
+                init_fname = f"init_{uuid.uuid4().hex}.png"
+                init_file_path = uploads_dir / init_fname
+                init_file_path.write_bytes(img_bytes)
+                init_image_path = f"uploads/{init_fname}"
+            except Exception as e:
+                logger.warning(f"[api_generate] Failed to decode ref_image data URL: {e}")
 
         # Process inpainting mask if provided
         mask_image_path = None
