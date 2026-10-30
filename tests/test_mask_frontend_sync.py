@@ -22,6 +22,7 @@ MASK_CORE_JS = (FRONTEND / "js" / "modules" / "mask-core.js").read_text(encoding
 GEN_MASK_JS = (FRONTEND / "js" / "modules" / "generate-mask.js").read_text(encoding="utf-8")
 INPAINT_JS = (FRONTEND / "js" / "modules" / "inpaint.js").read_text(encoding="utf-8")
 GENERATOR_JS = (FRONTEND / "js" / "modules" / "generator.js").read_text(encoding="utf-8")
+APP_PY = (root_dir / "app.py").read_text(encoding="utf-8")
 
 
 def _mask_data_url() -> str:
@@ -387,3 +388,12 @@ def test_models_endpoint_exposes_the_mask_capability():
     ):
         assert by_id[model_id]["supports_mask"] is True, model_id
     assert by_id["flux_3_image_klein_nunchaku"]["supports_mask"] is False
+
+
+def test_generate_endpoint_bypasses_backend_filter_for_engine_cards():
+    """/api/generate must not filter Nunchaku/OrbitQuant/SD.CPP cards by the
+    QuantFunc-only backend=lighting request parameter (the Inpaint studio sends
+    no backend/variant_id, which used to produce
+    "No compatible transformer found for backend=lighting")."""
+    assert 'backend_filter = backend if model_engine == "quantfunc" else None' in APP_PY
+    assert "get_transformers_for_tier(STATE.gpu_info.sm, backend=backend_filter)" in APP_PY
