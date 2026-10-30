@@ -712,7 +712,23 @@ class SDCppWorker:
                     if cand_cn.exists():
                         cn_path = cand_cn
 
-                if ref_mode == "img2img":
+                mask_path_obj = Path(request.mask_image_path) if getattr(request, "mask_image_path", None) else None
+                if mask_path_obj and not mask_path_obj.is_absolute():
+                    mask_path_obj = settings.output_dir / mask_path_obj
+                has_mask = mask_path_obj and mask_path_obj.exists()
+
+                if has_mask:
+                    # Inpaint mode: pass -i, --mask, --strength and optional mask_blur
+                    cmd.extend(["-i", str(ref_path), "--mask", str(mask_path_obj)])
+                    cmd.extend(["--strength", str(round(strength, 2))])
+                    mask_blur_val = int(getattr(request, "mask_blur", 0) or 0)
+                    if mask_blur_val > 0:
+                        if "--model-args" in cmd:
+                            idx = cmd.index("--model-args")
+                            cmd[idx + 1] += f",mask_blur={mask_blur_val}"
+                        else:
+                            cmd.extend(["--model-args", f"mask_blur={mask_blur_val}"])
+                elif ref_mode == "img2img":
                     # Classic noise-based Img2Img (--init-img + --strength)
                     cmd.extend(["-i", str(ref_path)])
                     cmd.extend(["--strength", str(round(strength, 2))])
@@ -939,6 +955,15 @@ class SDCppWorker:
             proc.wait()
         finally:
             self._current_process = None
+            if getattr(request, "mask_image_path", None):
+                try:
+                    m_path = Path(request.mask_image_path)
+                    if not m_path.is_absolute():
+                        m_path = settings.output_dir / m_path
+                    if m_path.exists():
+                        m_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         if proc.returncode != 0:
             tail = "\n".join(captured_lines[-20:]) if captured_lines else "(no output)"

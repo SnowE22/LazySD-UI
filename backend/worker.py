@@ -84,6 +84,8 @@ class GenerateRequest:
     use_prequant: bool = False
     init_image_path: Optional[Path] = None  # For img2img / image edit
     init_image_strength: float = 0.7
+    mask_image_path: Optional[Path] = None  # For inpainting
+    mask_blur: int = 4
     lora_paths: list[Path] = field(default_factory=list)
     lora_strengths: list[float] = field(default_factory=list)
     output_filename: Optional[str] = None

@@ -1,0 +1,324 @@
+(function() {
+  'use strict';
+  
+  const app = window.App || {};
+  if (!app.state) app.state = {};
+  app.state.inpaint = {
+    tool: 'brush', // 'view', 'brush', 'eraser'
+    brushSize: 32,
+    maskBlur: 4,
+    denoiseStrength: 0.75,
+    steps: 20,
+    cfgScale: 7.0,
+    seed: -1,
+    invertMask: false,
+    showMaskOverlay: true,
+    sourceDataUrl: null,
+    sourcePath: null,
+    resultDataUrl: null,
+    comparing: false,
+    isDrawing: false,
+    lastX: 0,
+    lastY: 0
+  };
+
+  function getCanvas() {
+    return document.getElementById('inpaint-mask-canvas');
+  }
+
+  function getCtx() {
+    const canvas = getCanvas();
+    return canvas ? canvas.getContext('2d') : null;
+  }
+
+  function getCoords(e, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / (rect.width || 1);
+    const scaleY = canvas.height / (rect.height || 1);
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+      scale: scaleX
+    };
+  }
+
+  function drawStroke(x1, y1, x2, y2, tool, brushSize, scale) {
+    const ctx = getCtx();
+    if (!ctx) return;
+    ctx.save();
+    if (tool === 'eraser') {
+      ctx.globalCompositeOperation = 'destination-out';
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = '#ffffff';
+      ctx.fillStyle = '#ffffff';
+    }
+    ctx.lineWidth = brushSize * scale;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x2, y2, (brushSize * scale) / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  Object.assign(app, {
+    initInpaintStudio(appRef) {
+      const st = app.state.inpaint;
+      const canvas = getCanvas();
+
+      if (!canvas || st._inpaintEventsBound) return;
+      st._inpaintEventsBound = true;
+
+      canvas.addEventListener('pointerdown', e => {
+        if (st.tool === 'view') return;
+        e.preventDefault();
+        const p = getCoords(e, canvas);
+        st.lastX = p.x;
+        st.lastY = p.y;
+        st.isDrawing = true;
+        drawStroke(p.x, p.y, p.x, p.y, st.tool, st.brushSize, p.scale);
+      });
+
+      canvas.addEventListener('pointermove', e => {
+        if (!st.isDrawing) return;
+        e.preventDefault();
+        const p = getCoords(e, canvas);
+        drawStroke(st.lastX, st.lastY, p.x, p.y, st.tool, st.brushSize, p.scale);
+        st.lastX = p.x;
+        st.lastY = p.y;
+      });
+
+      canvas.addEventListener('pointerup', () => {
+        st.isDrawing = false;
+      });
+
+      canvas.addEventListener('pointerleave', () => {
+        st.isDrawing = false;
+      });
+
+      canvas.addEventListener('pointercancel', () => {
+        st.isDrawing = false;
+      });
+
+      document.getElementById('inpaint-dropzone').addEventListener('dragover', e => {
+        e.preventDefault();
+      });
+
+      document.getElementById('inpaint-dropzone').addEventListener('drop', async (e) => {
+        const file = e.dataTransfer.files[0];
+        if (!file) return;
+        app.onInpaintFileUpload({ target: { files: [file] } });
+      });
+
+      document.getElementById('inpaint-model-select').innerHTML = document.getElementById('model-select')?.innerHTML || '';
+      document.getElementById('inpaint-model-select').value = document.getElementById('model-select')?.value || '';
+
+      if (app.initViewportZoomPan) app.initViewportZoomPan('inpaint', { areaId: 'inpaint-dropzone', wrapId: 'inpaint-preview-wrap', hudId: 'inpaint-zoom-hud', labelId: 'inpaint-zoom-label', scrollXId: 'inpaint-scrollbar-x', thumbXId: 'inpaint-scrollbar-thumb-x', scrollYId: 'inpaint-scrollbar-y', thumbYId: 'inpaint-scrollbar-thumb-y' }, app);
+    },
+
+    setInpaintTool(tool) {
+      const st = app.state.inpaint;
+      st.tool = tool;
+      ['view', 'brush', 'eraser'].forEach(t => {
+        const btn = document.getElementById(`inpaint-tool-${t}`);
+        if (btn) btn.classList.toggle('active', t === tool);
+      });
+      const canvas = getCanvas();
+      if (canvas) canvas.style.cursor = (tool === 'view') ? 'grab' : 'crosshair';
+    },
+
+    setInpaintBrushSize(size) {
+      const val = parseInt(size, 10) || 32;
+      const st = app.state.inpaint;
+      st.brushSize = val;
+      const range = document.getElementById('inpaint-brush-size');
+      const num = document.getElementById('inpaint-brush-val');
+      if (range && range.value != val) range.value = val;
+      if (num) num.textContent = `${val}px`;
+    },
+
+    clearInpaintMask() {
+      const ctx = getCtx();
+      if (!ctx) return;
+      ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    },
+
+    invertInpaintMask() {
+      const canvas = getCanvas();
+      const ctx = getCtx();
+      if (!canvas || !ctx) return;
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] > 128) {
+          d[i] = 0; d[i+1] = 0; d[i+2] = 0; d[i+3] = 0;
+        } else {
+          d[i] = 255; d[i+1] = 255; d[i+2] = 255; d[i+3] = 255;
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+    },
+
+    toggleInpaintMaskOverlay(show) {
+      const canvas = getCanvas();
+      if (canvas) canvas.style.display = show ? 'block' : 'none';
+    },
+
+    onInpaintFileUpload(event) {
+      const file = event?.target?.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => app.loadInpaintSource(e.target.result, file.name);
+      reader.readAsDataURL(file);
+    },
+
+    loadInpaintSource(url, filename, appRef) {
+      const st = app.state.inpaint;
+      st.sourceDataUrl = url;
+      st.resultDataUrl = null;
+      st.comparing = false;
+
+      const previewImg = document.getElementById('inpaint-preview-img');
+      const metaInfo = document.getElementById('inpaint-meta-info');
+      const emptyState = document.getElementById('inpaint-empty-state');
+      const previewWrap = document.getElementById('inpaint-preview-wrap');
+      const compareBadge = document.getElementById('inpaint-compare-badge');
+
+      if (compareBadge) compareBadge.style.display = 'none';
+
+      if (previewImg) {
+        previewImg.onload = () => {
+          const canvas = getCanvas();
+          if (canvas) {
+            canvas.width = previewImg.naturalWidth;
+            canvas.height = previewImg.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+          }
+          if (metaInfo) metaInfo.textContent = `${previewImg.naturalWidth} × ${previewImg.naturalHeight} px`;
+          if (emptyState) emptyState.style.display = 'none';
+          if (previewWrap) previewWrap.style.display = 'inline-flex';
+        };
+        previewImg.src = url;
+      }
+    },
+
+    async runInpaint() {
+      const st = app.state.inpaint;
+
+      if (!st.sourceDataUrl) {
+        (window.toast || app.toast)('warning', 'Сначала загрузите изображение');
+        return;
+      }
+
+      const prompt = document.getElementById('inpaint-prompt')?.value?.trim() || '';
+      const negative_prompt = document.getElementById('inpaint-negative-prompt')?.value?.trim() || '';
+      const strength = parseFloat(document.getElementById('inpaint-strength')?.value) || st.denoiseStrength;
+      const mask_blur = parseInt(document.getElementById('inpaint-mask-blur')?.value, 10) || st.maskBlur;
+      const steps = parseInt(document.getElementById('inpaint-steps')?.value, 10) || st.steps;
+      const cfg_scale = parseFloat(document.getElementById('inpaint-cfg')?.value) || st.cfgScale;
+      const seedVal = document.getElementById('inpaint-seed')?.value?.trim();
+      const seed = (seedVal && seedVal !== '-1' && !isNaN(parseInt(seedVal, 10))) ? parseInt(seedVal, 10) : null;
+      const model = document.getElementById('inpaint-model-select')?.value || app.state.selectedModel;
+
+      const canvas = getCanvas();
+      const maskDataUrl = canvas ? canvas.toDataURL('image/png') : '';
+
+      const overlay = document.getElementById('inpaint-loading-overlay');
+      const progressText = document.getElementById('inpaint-loading-text');
+
+      if (overlay) overlay.style.display = 'flex';
+      if (progressText) progressText.textContent = 'Инициализация генерации...';
+
+      try {
+        const res = await (app.apiPost || window.apiPost)('/api/generate', {
+          mode: 'inpaint',
+          ref_image: st.sourceDataUrl,
+          mask_image: maskDataUrl,
+          mask_blur: mask_blur,
+          invert_mask: st.invertMask,
+          prompt,
+          negative_prompt,
+          model,
+          strength,
+          steps,
+          cfg_scale,
+          seed
+        });
+
+        const jobId = res?.job_id;
+        if (!jobId) throw new Error('Не получен job_id');
+
+        const pollInterval = setInterval(async () => {
+          try {
+            const status = await (app.apiGet || window.apiGet)(`/api/jobs/${jobId}`);
+            if (progressText && status) {
+              const step = status.step || 0;
+              const total = status.total_steps || steps;
+              const pct = status.percentage || Math.round((step / Math.max(1, total)) * 100);
+              progressText.textContent = `Генерация: шаг ${step}/${total} (${pct}%)`;
+            }
+            if (status.status === 'complete') {
+              clearInterval(pollInterval);
+              if (overlay) overlay.style.display = 'none';
+              const outUrl = status.image_path.startsWith('/') ? status.image_path : '/' + status.image_path;
+              st.resultDataUrl = outUrl;
+              const previewImg = document.getElementById('inpaint-preview-img');
+              if (previewImg) previewImg.src = outUrl;
+              const canvas = getCanvas();
+              if (canvas) canvas.style.display = 'none';
+              const showMaskChk = document.getElementById('inpaint-show-mask');
+              if (showMaskChk) showMaskChk.checked = false;
+              (window.toast || app.toast)('success', 'Inpaint успешно сгенерирован! ✓');
+              if (app.loadHistory) app.loadHistory();
+            } else if (status.status === 'error') {
+              clearInterval(pollInterval);
+              if (overlay) overlay.style.display = 'none';
+              (window.toast || app.toast)('error', 'Ошибка: ' + (status.error || status.message || ''));
+            } else if (status.status === 'cancelled') {
+              clearInterval(pollInterval);
+              if (overlay) overlay.style.display = 'none';
+              (window.toast || app.toast)('info', 'Генерация отменена');
+            }
+          } catch (err) {
+            console.error('[inpaint] poll error:', err);
+          }
+        }, 250);
+      } catch (e) {
+        if (overlay) overlay.style.display = 'none';
+        (window.toast || app.toast)('error', 'Ошибка запуска: ' + e.message);
+      }
+    },
+
+    toggleInpaintCompare() {
+      const st = app.state.inpaint;
+      if (!st.resultDataUrl || !st.sourceDataUrl) return;
+
+      st.comparing = !st.comparing;
+
+      const previewImg = document.getElementById('inpaint-preview-img');
+      const compareBadge = document.getElementById('inpaint-compare-badge');
+
+      if (previewImg) previewImg.src = st.comparing ? st.sourceDataUrl : st.resultDataUrl;
+      if (compareBadge) compareBadge.style.display = st.comparing ? 'block' : 'none';
+    },
+
+    downloadInpaintPng() {
+      const st = app.state.inpaint;
+      const url = st.resultDataUrl || st.sourceDataUrl;
+      if (!url) return;
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `inpaint_${Date.now()}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  });
+})();

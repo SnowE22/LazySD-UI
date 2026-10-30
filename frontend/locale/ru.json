@@ -1,7 +1,6 @@
 {
   "app.title": "QuantFunc WebUI",
   "app.brand": "QuantFunc",
-
   "nav.generate": "Генерация",
   "nav.image_edit": "Редактирование",
   "nav.img2img": "Img2Img",
@@ -10,15 +9,12 @@
   "nav.templates": "Шаблоны",
   "nav.history": "История",
   "nav.settings": "Настройки",
-
   "nav.section.pipelines": "Пайплайны",
   "nav.section.tools": "Инструменты",
   "nav.section.system": "Система",
-
   "gpu.detected": "GPU определена",
   "gpu.not_detected": "GPU не найдена",
   "gpu.checking": "Проверка GPU...",
-
   "preview.placeholder": "Сгенерированное изображение появится здесь",
   "preview.empty_icon": "🖼",
   "preview.zoom_fit": "Вписать",
@@ -26,13 +22,11 @@
   "preview.fullscreen": "Полный экран",
   "preview.download": "Скачать",
   "preview.open_folder": "Открыть папку",
-
   "prompt.placeholder": "Опишите изображение для генерации...",
   "prompt.label": "Промпт",
   "prompt.negative": "Негативный промпт",
   "prompt.negative_label": "Негативный промпт",
   "prompt.negative_placeholder": "Что исключить из изображения (blur, watermark, low quality, artifacts)...",
-
   "controls.model": "Модель",
   "controls.text_encoder": "Текстовый энкодер",
   "controls.custom_te_placeholder": "Путь к .safetensors (напр. из ComfyUI)...",
@@ -62,11 +56,9 @@
   "controls.generate": "Генерировать",
   "controls.cancel": "Отмена",
   "controls.busy": "Идёт работа...",
-
   "backend.lighting": "Lighting (4 шага, быстрее)",
   "backend.svdq": "SVDQ (4 шага, runtime LoRA)",
   "backend.svdq_full": "SVDQ (20 шагов, полный)",
-
   "status.ready": "Готово",
   "status.loading": "Загрузка...",
   "status.downloading": "Скачивание файлов...",
@@ -77,7 +69,6 @@
   "status.error": "Ошибка",
   "status.cancelled": "Отменено",
   "status.offline": "Оффлайн",
-
   "model.installed": "Установлено",
   "model.incomplete": "Незавершено",
   "model.missing": "Отсутствует",
@@ -89,7 +80,6 @@
   "model.available": "Доступно",
   "model.not_recommended": "Не рекомендуется",
   "model.size_gb": "ГБ",
-
   "settings.title": "Настройки",
   "settings.section.paths": "Пути",
   "settings.section.engine": "Движки",
@@ -102,18 +92,15 @@
   "settings.section.about": "О проекте и авторы нейросети",
   "role.host": "Хост",
   "role.guest": "Гость",
-
   "settings.vae.qwen_title": "Qwen-Image-2.1 VAE",
   "settings.vae.qwen_desc": "Выбор декодера VAE. Texture-Fix убирает 2px шахматный шум и текстуру ковра.",
   "settings.vae.texture_fix": "Texture-Fix VAE (madebyollin, без полос и ковра) [Рекомендуется]",
   "settings.vae.official": "Официальный VAE (Comfy-Org / Wan 2.1)",
-
   "settings.models_dir": "Папка моделей",
   "settings.output_dir": "Папка вывода",
   "settings.engine_path": "Путь к engine",
   "settings.cache_dir": "Папка кэша",
   "settings.browse": "Обзор",
-
   "settings.engine_version": "Версия engine",
   "settings.cuda_version": "Версия CUDA",
   "settings.check_updates": "Проверить обновления",
@@ -161,7 +148,6 @@
   "settings.engine.install_started": "Установка {{label}}...",
   "settings.engine.install_done": "Установка {{label}} завершена",
   "settings.engine.install_failed": "Ошибка установки {{label}}: ",
-
   "settings.gpu_name": "Имя GPU",
   "settings.gpu_sm": "SM (вычислительные возможности)",
   "settings.gpu_vram": "VRAM",
@@ -173,7 +159,6 @@
   "settings.vram_mode.maximum": "Максимальный",
   "settings.auto_optimize": "Авто-оптимизация",
   "settings.redetect_gpu": "Переопределить GPU",
-
   "settings.download_source": "Приоритет источника",
   "settings.download_source.auto": "Авто (HF затем MS)",
   "settings.download_source.hf_first": "Сначала HuggingFace",
@@ -187,17 +172,14 @@
   "settings.ms_token": "Токен ModelScope",
   "settings.auto_update": "Авто-обновление engine",
   "settings.auto_update.warn": "Авто-обновление ВЫКЛЮЧЕНО по умолчанию (offline-first)",
-
   "settings.qf_api_key": "QuantFunc API-ключ",
   "settings.qf_api_key.hint": "Оставьте пустым — будет использован общий тестовый ключ из bin/<os>/config.json (регистрация не нужна, действует в публичной бете). После релиза получите свой ключ на quantfunc.com — он сохранится здесь и будет передаваться движку как --apikey.",
   "settings.qf_api_key.restore": "Восстановить тестовый ключ",
-
   "settings.fbcache_cond": "Порог FBCache cond",
   "settings.fbcache_uncond": "Порог FBCache uncond",
   "settings.rotation_block_size": "Размер блока rotation",
   "settings.log_level": "Уровень логирования",
   "settings.worker_restart": "Авто-перезапуск worker при падении",
-
   "templates.title": "Шаблоны промптов",
   "templates.new": "Новый шаблон",
   "templates.import": "Импорт",
@@ -210,7 +192,6 @@
   "templates.delete": "Удалить",
   "templates.save": "Сохранить",
   "templates.cancel": "Отмена",
-
   "history.title": "История",
   "history.empty": "Пока нет генераций",
   "history.rerun": "Перезапустить",
@@ -225,19 +206,15 @@
   "history.no_prompt": "(Промпт не сохранён)",
   "history.show_in_folder": "Показать в папке",
   "history.open_output_folder": "Папка вывода",
-
   "dropzone.title": "Перетащите изображение или нажмите для загрузки",
   "dropzone.subtitle": "PNG, JPG, WEBP до 25 МБ",
-
   "img2img.title": "Режим редактирования (Img2Img)",
   "img2img.drop_hint": "Перетащите референсное изображение или нажмите для выбора",
   "img2img.strength": "Сила изменений (Strength)",
   "img2img.strength_hint": "Степень изменения референса (0.1 — минимальная правка, 0.9 — сильная переработка)",
   "img2img.remove": "Удалить референс",
   "img2img.send_to": "Редактировать в Img2Img",
-
   "errors.upload_failed": "Ошибка при загрузке референсного изображения",
-
   "toast.engine_downloaded": "Engine скачан и проверен ✓",
   "toast.engine_verify_ok": "Engine актуален ✓",
   "toast.engine_update_available": "Доступно обновление engine",
@@ -247,7 +224,6 @@
   "toast.generation_error": "Ошибка генерации",
   "toast.cancelled": "Отменено",
   "toast.settings_saved": "Настройки сохранены",
-
   "common.yes": "Да",
   "common.no": "Нет",
   "common.ok": "ОК",
@@ -262,7 +238,6 @@
   "common.not_installed": "Не установлен",
   "common.enabled": "Включено",
   "common.disabled": "Отключено",
-
   "errors.engine_not_installed": "QuantFunc engine не установлен. Перейдите в Настройки → Скачать engine.",
   "errors.gpu_incompatible": "GPU несовместима с этой моделью.",
   "errors.missing_files": "Некоторые необходимые файлы отсутствуют. Сначала скачайте их.",
@@ -272,7 +247,6 @@
   "errors.history_load_failed": "Не удалось загрузить историю",
   "errors.history_delete_failed": "Не удалось удалить изображение",
   "errors.clipboard_denied": "Доступ к буферу обмена запрещён",
-
   "models.hub_title": "Каталог моделей",
   "models.hub_subtitle": "Выбор активной модели, архитектуры и варианта квантизации",
   "models.search_placeholder": "Поиск модели по имени или семейству...",
@@ -416,12 +390,10 @@
   "models.component_picker.added": "Компонент добавлен в карточку",
   "models.component_picker.manual_te": "author/repo::text_encoder/model.safetensors",
   "models.component_picker.manual_vae": "author/repo::vae/file.safetensors",
-
   "controls.quantization": "Квантование",
   "controls.hint_quantfunc_te": "QuantFunc динамически сжимает BF16 в INT4 в RAM",
   "controls.hint_sdcpp_te": "Мультимодальный Unsloth GGUF энкодер (--llm)",
   "controls.hint_sdnq_te": "SDNQ Dynamic INT8 Qwen3-VL-8B (CPU Offload)",
-
   "custom_model.title": "Импорт своей модели",
   "custom_model.subtitle": "Подключение локальных весов (.gguf / .safetensors) или прямой импорт из Hugging Face Hub",
   "custom_model.name": "Название модели",
@@ -499,10 +471,8 @@
   "custom_model.vae_link_placeholder": "например: madebyollin/texture-fix-vae-for-qwen-image-2.1::texture_fix_vae_for_qwen_image_2.1_bf16.safetensors",
   "custom_model.files_hint": "Выберите файлы модели для добавления в карточку (структура папок сохраняется):",
   "custom_model.import_registry": "🤗 Импортировать модель в реестр",
-
   "nav.halftone": "Halftone Studio GT",
   "nav.manga": "Manga Screen AI",
-
   "halftone.title": "Halftone Studio GT",
   "halftone.subtitle": "Алгоритмический полутоновый растр, слои GenTonik, лассо-выделение, спутники и эффект печатной манги (CPU)",
   "halftone.mode": "Режим растра",
@@ -559,7 +529,6 @@
   "halftone.send_to_manga": "Открыть в Manga Screen AI",
   "halftone.empty_hint": "Загрузите изображение или выберите работу из галереи для настройки растра и слоёв GenTonik",
   "halftone.saved_toast": "Результат Halftone Studio GT сохранён в галерею",
-
   "manga.title": "Manga Screen AI",
   "manga.subtitle": "Модульный пайплайн преобразования иллюстраций в печатную мангу: AI Edit + Контур + Manga Finish",
   "manga.mode_lite": "Manga Lite (CPU)",
@@ -606,7 +575,6 @@
   "manga.saved_toast": "Результат Manga Screen AI сохранён в галерею",
   "history.reopen_halftone": "Открыть настройки в Halftone Studio GT",
   "history.reopen_manga": "Открыть настройки в Manga Screen AI",
-
   "queue.title": "GPU занят",
   "queue.initial": "Ожидание свободного GPU...",
   "queue.waiting": "Позиция {{position}} · задач в очереди: {{total}}",
@@ -616,7 +584,6 @@
   "queue.cancelled": "Задача отменена",
   "queue.cancel_failed": "Не удалось отменить задачу",
   "queue.short": "В очереди",
-
   "presence.title": "Подключённые пользователи",
   "presence.connected": "Онлайн: {{count}}",
   "presence.offline": "Мониторинг подключений недоступен",
@@ -625,7 +592,6 @@
   "presence.enabled_toast": "Мониторинг подключений включён",
   "presence.disabled_toast": "Мониторинг подключений отключён",
   "presence.save_error": "Не удалось сохранить настройку мониторинга",
-
   "dock.drag_enable": "Включить свободное перемещение",
   "dock.drag_disable": "Отключить свободное перемещение",
   "dock.drag_on": "Свободное перемещение включено: тяните за ⋮⋮",
@@ -633,7 +599,6 @@
   "dock.drag_on_short": "Drag включён",
   "dock.drag_off_short": "Включить Drag",
   "dock.reset_done": "Док возвращён в нижний центр",
-
   "manga.queue_waiting": "В очереди GPU...",
   "settings.guest.banner_desc": "Системные пути, токены и управление движками защищены владельцем. Вам доступны генерация и просмотр своих работ.",
   "settings.guest.my_account": "👤 Мой аккаунт гостя",
@@ -1030,5 +995,23 @@
   "templates.confirm_delete": "Удалить этот шаблон?",
   "templates.empty_dock": "У вас пока нет сохранённых шаблонов.",
   "templates.save_current_dock": "💾 Сохранить текущие настройки в шаблон",
-  "templates.steps": "{{count}} шагов"
+  "templates.steps": "{{count}} шагов",
+  "inpaint.title": "Inpaint Studio",
+  "inpaint.empty_hint": "Загрузите изображение, выберите кисть и закрасьте область, которую хотите изменить.",
+  "inpaint.generating": "Генерация Inpaint...",
+  "inpaint.settings_title": "Параметры инпейнтинга",
+  "inpaint.prompt": "Промпт",
+  "inpaint.negative_prompt": "Негативный промпт",
+  "inpaint.strength": "Сила изменения (Denoise)",
+  "inpaint.mask_blur": "Размытие краёв (Mask Blur)",
+  "inpaint.generate_btn": "Сгенерировать Inpaint",
+  "inpaint.ui.tools": "Инструменты",
+  "inpaint.ui.tool_view": "Просмотр",
+  "inpaint.ui.tool_brush": "Кисть",
+  "inpaint.ui.tool_eraser": "Ластик",
+  "inpaint.ui.brush_size": "Размер кисти",
+  "inpaint.ui.actions": "Действия",
+  "inpaint.ui.clear_mask": "Очистить",
+  "inpaint.ui.invert_mask": "Инвертировать",
+  "inpaint.ui.mask_overlay": "Маска"
 }

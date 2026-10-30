@@ -8516,6 +8516,18 @@ def create_app() -> FastAPI:
 
 
 
+            raw_mask_image = body.get("mask_image")
+
+
+
+            mask_blur_val = int(body.get("mask_blur", 4))
+
+
+
+            invert_mask_flag = bool(body.get("invert_mask", False))
+
+
+
         except (KeyError, TypeError, ValueError) as e:
 
 
@@ -8613,6 +8625,39 @@ def create_app() -> FastAPI:
 
 
                 init_image_path = norm
+
+
+
+        # Process inpainting mask if provided
+        mask_image_path = None
+        if raw_mask_image and init_image_path:
+            try:
+                import uuid
+                import numpy as np
+                from PIL import Image
+                from backend.halftone import decode_mask_to_float
+
+                full_init_path = settings.output_dir / init_image_path
+                if full_init_path.exists():
+                    with Image.open(full_init_path) as init_img:
+                        init_w, init_h = init_img.size
+
+                    mask_float = decode_mask_to_float(
+                        raw_mask_image,
+                        target_size=(init_w, init_h),
+                        invert_mask=invert_mask_flag,
+                    )
+                    if mask_float is not None:
+                        mask_uint8 = (np.clip(mask_float, 0.0, 1.0) * 255.0).astype(np.uint8)
+                        mask_pil = Image.fromarray(mask_uint8, mode="L")
+                        uploads_dir = settings.output_dir / "uploads"
+                        uploads_dir.mkdir(parents=True, exist_ok=True)
+                        mask_filename = f"mask_{uuid.uuid4().hex}.png"
+                        saved_mask_path = uploads_dir / mask_filename
+                        mask_pil.save(saved_mask_path)
+                        mask_image_path = saved_mask_path
+            except Exception as e:
+                logger.warning(f"[api_generate] Failed to decode/save inpaint mask: {e}")
 
 
 
@@ -9041,6 +9086,14 @@ def create_app() -> FastAPI:
 
 
             init_image_strength=init_image_strength,
+
+
+
+            mask_image_path=mask_image_path,
+
+
+
+            mask_blur=mask_blur_val,
 
 
 

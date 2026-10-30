@@ -1896,6 +1896,8 @@ const App = {
       this.initHalftoneStudio();
     } else if (tabName === "manga") {
       this.initMangaStudio();
+    } else if (tabName === "inpaint") {
+      if (this.initInpaintStudio) this.initInpaintStudio();
     }
   },
 
@@ -6790,6 +6792,7 @@ function initViewportZoomPan(mode, cfg, appRef = null) {
     }
 
     const htTool = (appRef?.state?.halftone?.tool || window.App?.state?.halftone?.tool) || "view";
+    const inpaintTool = (appRef?.state?.inpaint?.tool || window.App?.state?.inpaint?.tool) || "view";
     const isMiddle = e.button === 1;
     const isRight = e.button === 2;
     const isLeft = e.button === 0;
@@ -6801,6 +6804,9 @@ function initViewportZoomPan(mode, cfg, appRef = null) {
       isPanning = true;
       isZoomToolClick = false;
     } else if (isLeft && mode === "halftone" && htTool === "view") {
+      isPanning = true;
+      isZoomToolClick = false;
+    } else if (isLeft && mode === "inpaint" && inpaintTool === "view") {
       isPanning = true;
       isZoomToolClick = false;
     } else if (isLeft && (mode === "manga" || mode === "generate")) {
@@ -10086,6 +10092,8 @@ function selectGalleryPickerItem(url, filename, appRef) {
     loadHalftoneSource(url, filename || "gallery_item.png", app);
   } else if (target === "manga") {
     if (app.loadMangaSource) app.loadMangaSource(url, filename || "gallery_item.png");
+  } else if (target === "inpaint") {
+    if (app.loadInpaintSource) app.loadInpaintSource(url, filename || "gallery_item.png");
   }
 }
 
@@ -10101,6 +10109,8 @@ function openHistoryItemInTool(tool, appRef) {
     loadHalftoneSource(url, it.filename || "history_image.png", app);
   } else if (tool === "manga") {
     if (app.loadMangaSource) app.loadMangaSource(url, it.filename || "history_image.png");
+  } else if (tool === "inpaint") {
+    if (app.loadInpaintSource) app.loadInpaintSource(url, it.filename || "history_image.png");
   }
 }
 
@@ -10116,6 +10126,8 @@ function useCanvasImageInTool(tool, appRef) {
     loadHalftoneSource(curImg, "generated_preview.png", app);
   } else if (tool === "manga") {
     if (app.loadMangaSource) app.loadMangaSource(curImg, "generated_preview.png");
+  } else if (tool === "inpaint") {
+    if (app.loadInpaintSource) app.loadInpaintSource(curImg, "generated_preview.png");
   }
 }
 
