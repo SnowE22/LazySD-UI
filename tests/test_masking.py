@@ -399,7 +399,7 @@ def test_workers_wire_the_mask_into_the_engine():
 
     # All three adapters crop to the mask bbox and paste the result back.
     for source in (extras_src, sd_cpp_src, worker_src):
-        assert "compute_crop_box" in source
+        assert "resolve_crop_box" in source
         assert "composite_crop_into_image" in source
         assert "paste_crop_into_image" in source
     assert "crop_size" in extras_src and "crop_size" in sd_cpp_src

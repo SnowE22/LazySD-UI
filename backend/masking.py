@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import math
 import os
 from pathlib import Path
 from typing import Optional, Tuple, Union
@@ -346,6 +347,174 @@ def composite_with_mask(
 MASK_CROP_PADDING = 64
 MASK_CROP_ALIGN = 16
 MASK_CROP_MIN_SIZE = 256
+
+# Crop modes exposed by the Inpaint studio:
+#   auto       - mask bbox + default padding/min size (fully automatic)
+#   parameters - mask bbox + user supplied padding/min size
+#   manual     - exact rectangle selected by the user on the canvas
+MASK_CROP_MODES = ("auto", "parameters", "manual")
+MASK_CROP_MANUAL_MIN_SIZE = 64
+
+# User editable ranges of the "parameters" mode (see the specification).
+MASK_CROP_PADDING_RANGE = (0, 1024)
+MASK_CROP_MIN_SIZE_RANGE = (64, 4096)
+
+# Threshold that decides whether a pixel belongs to the painted mask.
+MASK_CROP_COVERAGE_THRESHOLD = 0.004
+
+
+def normalize_crop_mode(value: Optional[str]) -> str:
+    """Validate/normalize a crop mode name."""
+    mode = str(value or "auto").strip().lower()
+    if mode not in MASK_CROP_MODES:
+        raise ValueError(
+            "mask_crop_mode must be one of: " + ", ".join(MASK_CROP_MODES)
+        )
+    return mode
+
+
+def _coerce_manual_crop_box(box) -> Tuple[int, int, int, int]:
+    """Accept ``[x0, y0, x1, y1]`` (or an equivalent mapping)."""
+    if isinstance(box, dict):
+        values = [box.get("x0"), box.get("y0"), box.get("x1"), box.get("y1")]
+    elif isinstance(box, (list, tuple)) and len(box) == 4:
+        values = list(box)
+    else:
+        raise ValueError("mask_crop_box must be [x0, y0, x1, y1]")
+    if any(value is None for value in values):
+        raise ValueError("mask_crop_box must contain four coordinates")
+    try:
+        numbers = [float(value) for value in values]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("mask_crop_box coordinates must be numbers") from exc
+    if not all(math.isfinite(number) for number in numbers):
+        raise ValueError("mask_crop_box coordinates must be finite numbers")
+    x0, y0, x1, y1 = (int(round(number)) for number in numbers)
+    if x0 > x1:
+        x0, x1 = x1, x0
+    if y0 > y1:
+        y0, y1 = y1, y0
+    return x0, y0, x1, y1
+
+
+def resolve_manual_crop_box(
+    manual_box,
+    width: int,
+    height: int,
+    align: int = MASK_CROP_ALIGN,
+    min_size: int = MASK_CROP_MANUAL_MIN_SIZE,
+) -> Tuple[int, int, int, int]:
+    """Normalize a user drawn rectangle into a valid engine crop box.
+
+    The rectangle is expressed in the coordinate system of the ORIGINAL image
+    (never in CSS pixels of the browser).  It is clamped to the image bounds,
+    aligned outward to the engine grid (16 px) and finally checked against the
+    minimal side length (64 px).
+    """
+    width = max(1, int(width))
+    height = max(1, int(height))
+    x0, y0, x1, y1 = _coerce_manual_crop_box(manual_box)
+    x0 = max(0, min(width, x0))
+    y0 = max(0, min(height, y0))
+    x1 = max(0, min(width, x1))
+    y1 = max(0, min(height, y1))
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError("mask_crop_box is outside the image")
+
+    align = max(1, int(align))
+    x0 = (x0 // align) * align
+    y0 = (y0 // align) * align
+    x1 = min(width, ((x1 + align - 1) // align) * align)
+    y1 = min(height, ((y1 + align - 1) // align) * align)
+
+    min_size = max(1, int(min_size))
+    if (x1 - x0) < min_size or (y1 - y0) < min_size:
+        raise ValueError(
+            f"mask_crop_box is too small (minimum {min_size}px per side)"
+        )
+    return int(x0), int(y0), int(x1), int(y1)
+
+
+def resolve_crop_box(
+    mask: np.ndarray,
+    mode: str = "auto",
+    padding: int = MASK_CROP_PADDING,
+    align: int = MASK_CROP_ALIGN,
+    min_size: int = MASK_CROP_MIN_SIZE,
+    manual_box=None,
+    coverage_mask: Optional[np.ndarray] = None,
+) -> Optional[Tuple[int, int, int, int]]:
+    """Resolve the engine crop box for the requested crop mode.
+
+    ``auto`` ignores the supplied padding/min size and uses the project
+    defaults.  ``parameters`` honours the supplied values.  ``manual`` uses the
+    user rectangle, aligned outward to the engine grid and clamped to the
+    image.
+
+    ``coverage_mask`` is the RAW (painted, not grown/blurred) mask.  It is the
+    reference used by the manual mode to guarantee that the crop covers the
+    whole painted mask - a manual rectangle that cuts the mask would silently
+    regenerate only a part of it.  When it is omitted the ``mask`` argument is
+    used instead.
+    """
+    arr = np.asarray(mask, dtype=np.float32)
+    if arr.ndim != 2 or arr.size == 0:
+        return None
+    height, width = arr.shape[:2]
+    mode = normalize_crop_mode(mode)
+
+    if mode == "manual":
+        if manual_box is None:
+            raise ValueError(
+                "mask_crop_box is required when mask_crop_mode is 'manual'"
+            )
+        x0, y0, x1, y1 = resolve_manual_crop_box(
+            manual_box,
+            width,
+            height,
+            align=align,
+            min_size=MASK_CROP_MANUAL_MIN_SIZE,
+        )
+        coverage = (
+            arr if coverage_mask is None
+            else np.asarray(coverage_mask, dtype=np.float32)
+        )
+        if coverage.ndim != 2 or coverage.shape != arr.shape:
+            raise ValueError(
+                "Mask size does not match the source image "
+                f"({coverage.shape} != {arr.shape})"
+            )
+        bbox = mask_bbox(coverage, threshold=MASK_CROP_COVERAGE_THRESHOLD)
+        if bbox is None:
+            raise ValueError("Mask is empty - paint the area to edit")
+        bx0, by0, bx1, by1 = bbox
+        if bx0 < x0 or by0 < y0 or bx1 > x1 or by1 > y1:
+            raise ValueError(
+                "The manual crop box must cover the whole mask "
+                f"(mask x {bx0}-{bx1}, y {by0}-{by1}; "
+                f"crop x {x0}-{x1}, y {y0}-{y1})"
+            )
+        return int(x0), int(y0), int(x1), int(y1)
+
+    if mode == "auto":
+        padding = MASK_CROP_PADDING
+        min_size = MASK_CROP_MIN_SIZE
+    else:
+        padding = max(
+            MASK_CROP_PADDING_RANGE[0],
+            min(MASK_CROP_PADDING_RANGE[1], int(padding)),
+        )
+        min_size = max(
+            MASK_CROP_MIN_SIZE_RANGE[0],
+            min(MASK_CROP_MIN_SIZE_RANGE[1], int(min_size)),
+        )
+
+    return compute_crop_box(
+        arr,
+        padding=padding,
+        align=align,
+        min_size=min_size,
+    )
 
 
 def mask_bbox(

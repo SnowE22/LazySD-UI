@@ -1088,5 +1088,22 @@
   "inpaint.layers.delete": "Delete",
   "inpaint.layers.opacity": "Opacity",
   "inpaint.layers.rename_prompt": "Layer name",
-  "inpaint.status.coverage": "Mask coverage"
+  "inpaint.status.coverage": "Mask coverage",
+  "inpaint.crop.title": "Generation area",
+  "inpaint.crop.mode_title": "Generation area mode",
+  "inpaint.crop.mode.auto": "Automatic",
+  "inpaint.crop.mode.parameters": "By parameters",
+  "inpaint.crop.mode.manual": "Manual",
+  "inpaint.crop.desc.auto": "The area is detected from the mask automatically: 64px padding, 256px minimum side.",
+  "inpaint.crop.desc.parameters": "The area is detected from the mask with the given padding and minimum side.",
+  "inpaint.crop.desc.manual": "The area is selected manually on the source image. The selection must cover the whole mask.",
+  "inpaint.crop.padding": "Padding (px)",
+  "inpaint.crop.min_size": "Min. side (px)",
+  "inpaint.crop.select": "Select area",
+  "inpaint.crop.selecting": "Cancel selection",
+  "inpaint.crop.reset": "Reset selection",
+  "inpaint.crop.no_selection": "No area selected",
+  "inpaint.crop.error.no_box": "Select the generation area on the image first",
+  "inpaint.crop.error.too_small": "The area is too small (minimum 64px per side)",
+  "inpaint.crop.error.not_covered": "The selection does not cover the whole mask - enlarge it"
 }
