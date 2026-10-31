@@ -705,11 +705,12 @@ class SDCppWorker:
             from PIL import Image
             from .masking import (
                 MaskError,
-                compute_crop_box,
                 crop_array,
                 crop_image,
                 mask_file_name,
+                normalize_crop_mode,
                 prepare_mask_arrays,
+                resolve_crop_box,
                 save_image_file,
                 save_mask_file,
             )
@@ -738,7 +739,15 @@ class SDCppWorker:
             except MaskError as exc:
                 raise ValueError(str(exc)) from exc
 
-            crop_box = compute_crop_box(engine_mask)
+            crop_mode = normalize_crop_mode(getattr(request, "mask_crop_mode", "auto"))
+            crop_box = resolve_crop_box(
+                engine_mask,
+                mode=crop_mode,
+                padding=getattr(request, "mask_crop_padding", 64),
+                min_size=getattr(request, "mask_crop_min_size", 256),
+                manual_box=getattr(request, "mask_crop_box", None),
+                coverage_mask=raw_mask,
+            )
             if crop_box is None:
                 raise ValueError("Mask is empty - paint the area to edit")
             crop_w = crop_box[2] - crop_box[0]
@@ -762,6 +771,9 @@ class SDCppWorker:
                 "crop_array": raw_crop,
                 "box": crop_box,
                 "crop_size": (crop_w, crop_h),
+                "crop_mode": str(crop_mode),
+                "crop_padding": int(getattr(request, "mask_crop_padding", 64) or 0),
+                "crop_min_size": int(getattr(request, "mask_crop_min_size", 256) or 0),
                 "file": mask_file,
                 "init_file": init_file,
                 "source_image": source_image,
@@ -1122,8 +1134,11 @@ class SDCppWorker:
                     "mask_blur": float(getattr(request, "mask_blur", 0.0) or 0.0),
                     "mask_source": mask_ctx["file"].name,
                     "mask_crop": {
+                        "mode": mask_ctx.get("crop_mode", "auto"),
                         "box": list(mask_ctx["box"]),
                         "size": list(mask_ctx["crop_size"]),
+                        "padding": mask_ctx.get("crop_padding"),
+                        "min_size": mask_ctx.get("crop_min_size"),
                     },
                     "mask_raw_fragment": raw_fragment_rel,
                     "composite": "generated*mask + original*(1-mask)",

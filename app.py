@@ -78,6 +78,10 @@ import json
 
 
 
+import math
+
+
+
 import os
 
 
@@ -1478,6 +1482,92 @@ def _get_token_for_source(source_type: str) -> Optional[str]:
 
 
 
+
+
+
+
+def _parse_int_in_range(value, name: str, bounds) -> int:
+
+    """Parse an integer request field and check it against an inclusive range."""
+
+    try:
+
+        number = int(value)
+
+    except (TypeError, ValueError) as exc:
+
+        raise ValueError(f"{name} must be an integer") from exc
+
+    low, high = bounds
+
+    if not low <= number <= high:
+
+        raise ValueError(f"{name} must be between {low} and {high}")
+
+    return number
+
+
+
+
+def _parse_mask_crop_box(value) -> Optional[list]:
+
+    """Validate the manual generation-area rectangle of a generate request.
+
+    The rectangle is a ``[x0, y0, x1, y1]`` list (a mapping with the same keys
+    is accepted as well) expressed in the pixel coordinates of the ORIGINAL
+    image.  ``None`` means "not set" and is only allowed for the automatic crop
+    modes.
+    """
+
+    if value is None:
+
+        return None
+
+    if isinstance(value, dict):
+
+        values = [value.get("x0"), value.get("y0"), value.get("x1"), value.get("y1")]
+
+    elif isinstance(value, (list, tuple)) and len(value) == 4:
+
+        values = list(value)
+
+    else:
+
+        raise ValueError("mask_crop_box must be [x0, y0, x1, y1]")
+
+    if any(item is None for item in values):
+
+        raise ValueError("mask_crop_box must contain four coordinates")
+
+    numbers = []
+
+    for item in values:
+
+        try:
+
+            number = float(item)
+
+        except (TypeError, ValueError) as exc:
+
+            raise ValueError("mask_crop_box coordinates must be numbers") from exc
+
+        if not math.isfinite(number):
+
+            raise ValueError("mask_crop_box coordinates must be finite numbers")
+
+        numbers.append(int(round(number)))
+
+    x0, y0, x1, y1 = numbers
+
+    if x0 > x1:
+
+        x0, x1 = x1, x0
+
+    if y0 > y1:
+
+        y0, y1 = y1, y0
+
+    return [x0, y0, x1, y1]
 
 
 
@@ -8462,6 +8552,24 @@ def create_app() -> FastAPI:
 
 
 
+        # Generation area (crop) parameters ------------------------------
+
+        from backend.masking import (
+
+            MASK_CROP_MIN_SIZE,
+
+            MASK_CROP_MIN_SIZE_RANGE,
+
+            MASK_CROP_MODES,
+
+            MASK_CROP_PADDING,
+
+            MASK_CROP_PADDING_RANGE,
+
+        )
+
+
+
         # Parse request
 
 
@@ -8540,6 +8648,48 @@ def create_app() -> FastAPI:
             if mask_present and not isinstance(raw_mask_invert, bool):
                 raise ValueError("mask_invert must be a boolean")
             mask_invert = raw_mask_invert if mask_present else bool(raw_mask_invert)
+
+            # Generation area (crop) -------------------------------------
+
+            mask_crop_mode = str(body.get("mask_crop_mode") or "auto").strip().lower()
+
+            if mask_crop_mode not in MASK_CROP_MODES:
+
+                raise ValueError(
+
+                    "mask_crop_mode must be one of: " + ", ".join(MASK_CROP_MODES)
+
+                )
+
+            mask_crop_padding = _parse_int_in_range(
+
+                body.get("mask_crop_padding", MASK_CROP_PADDING),
+
+                "mask_crop_padding",
+
+                MASK_CROP_PADDING_RANGE,
+
+            )
+
+            mask_crop_min_size = _parse_int_in_range(
+
+                body.get("mask_crop_min_size", MASK_CROP_MIN_SIZE),
+
+                "mask_crop_min_size",
+
+                MASK_CROP_MIN_SIZE_RANGE,
+
+            )
+
+            mask_crop_box = _parse_mask_crop_box(body.get("mask_crop_box"))
+
+            if mask_crop_mode == "manual" and mask_crop_box is None:
+
+                raise ValueError(
+
+                    "mask_crop_box is required when mask_crop_mode is 'manual'"
+
+                )
 
 
 
@@ -9133,6 +9283,14 @@ def create_app() -> FastAPI:
             mask_grow=mask_grow,
             mask_blur=mask_blur,
             mask_invert=mask_invert,
+
+            mask_crop_mode=mask_crop_mode,
+
+            mask_crop_padding=mask_crop_padding,
+
+            mask_crop_min_size=mask_crop_min_size,
+
+            mask_crop_box=mask_crop_box,
 
 
 

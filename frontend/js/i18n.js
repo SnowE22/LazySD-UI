@@ -69,6 +69,13 @@ async function setLocale(locale) {
   applyTranslations();
   localStorage.setItem("qf_lang", locale);
 
+  // Let dynamically rendered widgets refresh their texts.
+  try {
+    window.dispatchEvent(new CustomEvent("qf:locale-changed", { detail: { locale } }));
+  } catch (e) {
+    console.warn("[i18n] Could not dispatch locale change:", e);
+  }
+
   // Persist to backend (best-effort, non-blocking)
   try {
     fetch("/api/settings", {

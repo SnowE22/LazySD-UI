@@ -1088,5 +1088,22 @@
   "inpaint.layers.delete": "Удалить",
   "inpaint.layers.opacity": "Непрозрачность",
   "inpaint.layers.rename_prompt": "Название слоя",
-  "inpaint.status.coverage": "Покрытие маски"
+  "inpaint.status.coverage": "Покрытие маски",
+  "inpaint.crop.title": "Область генерации",
+  "inpaint.crop.mode_title": "Режим области генерации",
+  "inpaint.crop.mode.auto": "Автоматически",
+  "inpaint.crop.mode.parameters": "По параметрам",
+  "inpaint.crop.mode.manual": "Вручную",
+  "inpaint.crop.desc.auto": "Область определяется автоматически по маске: отступ 64 px, минимальная сторона 256 px.",
+  "inpaint.crop.desc.parameters": "Область определяется по маске с заданным отступом и минимальной стороной.",
+  "inpaint.crop.desc.manual": "Область выделяется вручную на исходном изображении. Выделение должно покрывать маску целиком.",
+  "inpaint.crop.padding": "Отступ (px)",
+  "inpaint.crop.min_size": "Мин. сторона (px)",
+  "inpaint.crop.select": "Выделить область",
+  "inpaint.crop.selecting": "Отмена выделения",
+  "inpaint.crop.reset": "Сбросить выделение",
+  "inpaint.crop.no_selection": "Область не выбрана",
+  "inpaint.crop.error.no_box": "Сначала выделите область генерации на изображении",
+  "inpaint.crop.error.too_small": "Область слишком маленькая (минимум 64 px по стороне)",
+  "inpaint.crop.error.not_covered": "Выделение не покрывает маску целиком — расширьте его"
 }

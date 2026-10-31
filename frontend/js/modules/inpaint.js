@@ -42,6 +42,16 @@ export function getInpaintState(appRef = null) {
       lastMaskSnapshot: null,
       sourceLoadSeq: 0,
       jobContext: null,
+      // Generation area (crop) - see the "generation area" helpers below.
+      crop: {
+        mode: "auto",
+        padding: 64,
+        minSize: 256,
+        box: null,
+        selecting: false,
+        dragStart: null,
+        dragRect: null,
+      },
     };
   }
   return app.state.inpaint;
@@ -106,6 +116,9 @@ function createMaskLayer(state, name) {
     surface,
     dataCanvas,
     viewCanvas,
+    // Bumped on every mask mutation so the cached mask bbox stays valid.
+    revision: 0,
+    maskRev: layerSeq,
   };
   viewCanvas.dataset.layerId = layer.id;
   return layer;
@@ -373,6 +386,8 @@ export async function loadInpaintSource(url, path, name, appRef = null) {
   refreshMaskLayerViews(app);
   renderInpaintComposite(app);
   renderInpaintLayersUI(app);
+  // A new source invalidates the previously selected generation area.
+  resetInpaintCropSelection(app);
   updateInpaintStatus(app);
   syncInpaintGeometry(app);
   return true;
@@ -399,6 +414,7 @@ export function clearInpaintSource(appRef = null) {
     canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
   }
   renderInpaintLayersUI(app);
+  resetInpaintCropSelection(app);
   updateInpaintStatus(app);
   syncInpaintGeometry(app);
 }
@@ -412,6 +428,11 @@ export function syncInpaintGeometry(appRef = null) {
   if (!canvas || !state.source) return;
   if (canvas.width !== state.source.width) canvas.width = state.source.width;
   if (canvas.height !== state.source.height) canvas.height = state.source.height;
+  const overlay = cropOverlay();
+  if (overlay) {
+    if (overlay.width !== state.source.width) overlay.width = state.source.width;
+    if (overlay.height !== state.source.height) overlay.height = state.source.height;
+  }
   for (const layer of state.layers) {
     if (layer.type !== "mask") continue;
     if (layer.viewCanvas.width !== state.source.width) layer.viewCanvas.width = state.source.width;
@@ -682,6 +703,7 @@ export function clearInpaintMask(appRef = null) {
   }
   pushHistory(state);
   layer.surface.clear(false);
+  layer.revision = (layer.revision || 0) + 1;
   updateInpaintStatus(app);
 }
 
@@ -696,7 +718,422 @@ export function invertInpaintMask(appRef = null) {
   }
   pushHistory(state);
   layer.surface.invert(false);
+  layer.revision = (layer.revision || 0) + 1;
   updateInpaintStatus(app);
+}
+
+// ---------- generation area (crop modes) ----------
+function cropOverlay() {
+  return document.getElementById("inpaint-crop-overlay");
+}
+
+export function getInpaintCropState(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return null;
+  if (!state.crop) {
+    state.crop = {
+      mode: "auto",
+      padding: 64,
+      minSize: 256,
+      box: null,
+      selecting: false,
+      dragStart: null,
+      dragRect: null,
+    };
+  }
+  return state.crop;
+}
+
+// Mirrors backend/masking.py :: resolve_manual_crop_box().
+export function resolveInpaintManualCropBox(box, width, height) {
+  if (!Array.isArray(box) || box.length !== 4) return null;
+  const align = 16;
+  const minSize = 64;
+  const w = Math.max(1, Math.round(Number(width) || 0));
+  const h = Math.max(1, Math.round(Number(height) || 0));
+  let x0 = Math.round(Number(box[0]) || 0);
+  let y0 = Math.round(Number(box[1]) || 0);
+  let x1 = Math.round(Number(box[2]) || 0);
+  let y1 = Math.round(Number(box[3]) || 0);
+  if (x0 > x1) { const tmp = x0; x0 = x1; x1 = tmp; }
+  if (y0 > y1) { const tmp = y0; y0 = y1; y1 = tmp; }
+  x0 = Math.max(0, Math.min(w, x0));
+  y0 = Math.max(0, Math.min(h, y0));
+  x1 = Math.max(0, Math.min(w, x1));
+  y1 = Math.max(0, Math.min(h, y1));
+  if (x1 <= x0 || y1 <= y0) return null;
+  x0 = Math.floor(x0 / align) * align;
+  y0 = Math.floor(y0 / align) * align;
+  x1 = Math.min(w, Math.ceil(x1 / align) * align);
+  y1 = Math.min(h, Math.ceil(y1 / align) * align);
+  if (x1 - x0 < minSize || y1 - y0 < minSize) return null;
+  return [x0, y0, x1, y1];
+}
+
+// Bounding box of the painted mask, in source pixels.
+// The result is cached - the mask only changes when a stroke is finished.
+export function getInpaintMaskBBox(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  const layer = activeMaskLayer(state);
+  if (!layer || !layer.dataCanvas) return null;
+  const crop = getInpaintCropState(app);
+  const key = `${layer.id}:${layer.maskRev || 0}:${layer.revision || 0}`;
+  if (crop && crop.maskBBoxKey === key) return crop.maskBBox;
+
+  const canvas = layer.dataCanvas;
+  const width = canvas.width || 0;
+  const height = canvas.height || 0;
+  if (!width || !height) return null;
+  let data;
+  try {
+    data = canvas.getContext("2d").getImageData(0, 0, width, height).data;
+  } catch (err) {
+    return null;
+  }
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      // alpha / 255 > 0.004  <=>  alpha >= 2 (same threshold as the backend)
+      if (data[(row + x) * 4 + 3] > 1) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  const box = maxX < 0 ? null : [minX, minY, maxX + 1, maxY + 1];
+  if (crop) {
+    crop.maskBBoxKey = key;
+    crop.maskBBox = box;
+  }
+  return box;
+}
+
+// Human readable problem of the current manual selection, or null.
+export function getInpaintCropProblem(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  const crop = getInpaintCropState(app);
+  if (!state || !crop || crop.mode !== "manual") return null;
+  if (!crop.box) {
+    return t(
+      "inpaint.crop.error.no_box",
+      "Сначала выделите область генерации на изображении"
+    );
+  }
+  const resolved = resolveInpaintManualCropBox(
+    crop.box,
+    state.source ? state.source.width : 0,
+    state.source ? state.source.height : 0
+  );
+  if (!resolved) {
+    return t(
+      "inpaint.crop.error.too_small",
+      "Область слишком маленькая (минимум 64 px по стороне)"
+    );
+  }
+  const bbox = getInpaintMaskBBox(app);
+  if (
+    bbox &&
+    (bbox[0] < resolved[0] || bbox[1] < resolved[1] ||
+      bbox[2] > resolved[2] || bbox[3] > resolved[3])
+  ) {
+    return t(
+      "inpaint.crop.error.not_covered",
+      "Выделение не покрывает маску целиком — расширьте его"
+    );
+  }
+  return null;
+}
+
+export function setInpaintCropMode(mode, appRef = null) {
+  const app = appRef || window.App;
+  const crop = getInpaintCropState(app);
+  if (!crop) return;
+  crop.mode = ["auto", "parameters", "manual"].includes(mode) ? mode : "auto";
+  if (crop.mode !== "manual") {
+    crop.selecting = false;
+    crop.dragStart = null;
+    crop.dragRect = null;
+  }
+  renderInpaintCropUI(app);
+  renderInpaintCropOverlay(app);
+  updateInpaintCropStatus(app);
+}
+
+export function setInpaintCropPadding(value, appRef = null) {
+  const app = appRef || window.App;
+  const crop = getInpaintCropState(app);
+  if (!crop) return;
+  const num = parseInt(value, 10);
+  crop.padding = Number.isFinite(num) ? Math.max(0, Math.min(1024, num)) : 64;
+  updateInpaintCropStatus(app);
+}
+
+export function setInpaintCropMinSize(value, appRef = null) {
+  const app = appRef || window.App;
+  const crop = getInpaintCropState(app);
+  if (!crop) return;
+  const num = parseInt(value, 10);
+  crop.minSize = Number.isFinite(num) ? Math.max(64, Math.min(4096, num)) : 256;
+  updateInpaintCropStatus(app);
+}
+
+export function toggleInpaintCropSelection(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  const crop = getInpaintCropState(app);
+  if (!state || !crop) return;
+  if (!state.source) {
+    toast("warning", t("inpaint.hint.no_source", "Сначала загрузите изображение"));
+    return;
+  }
+  if (crop.mode !== "manual") setInpaintCropMode("manual", app);
+  crop.selecting = !crop.selecting;
+  crop.dragStart = null;
+  crop.dragRect = null;
+  renderInpaintCropUI(app);
+  renderInpaintCropOverlay(app);
+  updateInpaintCropStatus(app);
+}
+
+export function resetInpaintCropSelection(appRef = null) {
+  const app = appRef || window.App;
+  const crop = getInpaintCropState(app);
+  if (!crop) return;
+  crop.box = null;
+  crop.selecting = false;
+  crop.dragStart = null;
+  crop.dragRect = null;
+  renderInpaintCropUI(app);
+  renderInpaintCropOverlay(app);
+  updateInpaintCropStatus(app);
+}
+
+function normalizeInpaintCropRect(a, b, width, height) {
+  if (!a || !b) return null;
+  const w = Math.max(1, Math.round(Number(width) || 0));
+  const h = Math.max(1, Math.round(Number(height) || 0));
+  const x0 = Math.max(0, Math.min(w, Math.min(a.x, b.x)));
+  const y0 = Math.max(0, Math.min(h, Math.min(a.y, b.y)));
+  const x1 = Math.max(0, Math.min(w, Math.max(a.x, b.x)));
+  const y1 = Math.max(0, Math.min(h, Math.max(a.y, b.y)));
+  return [x0, y0, x1, y1];
+}
+
+export function renderInpaintCropUI(appRef = null) {
+  const app = appRef || window.App;
+  const crop = getInpaintCropState(app);
+  if (!crop) return;
+
+  const modeSelect = document.getElementById("inpaint-crop-mode");
+  if (modeSelect && modeSelect.value !== crop.mode) modeSelect.value = crop.mode;
+
+  const params = document.getElementById("inpaint-crop-params");
+  if (params) params.style.display = crop.mode === "parameters" ? "flex" : "none";
+
+  const manual = document.getElementById("inpaint-crop-manual");
+  if (manual) manual.style.display = crop.mode === "manual" ? "flex" : "none";
+
+  const desc = document.getElementById("inpaint-crop-desc");
+  if (desc) {
+    const key = crop.mode === "auto"
+      ? "inpaint.crop.desc.auto"
+      : (crop.mode === "parameters"
+        ? "inpaint.crop.desc.parameters"
+        : "inpaint.crop.desc.manual");
+    desc.textContent = t(key, "");
+  }
+
+  const selectBtn = document.getElementById("inpaint-crop-select");
+  if (selectBtn) {
+    selectBtn.classList.toggle("active", !!crop.selecting);
+    selectBtn.textContent = crop.selecting
+      ? t("inpaint.crop.selecting", "Отмена выделения")
+      : t("inpaint.crop.select", "Выделить область");
+  }
+
+  const resetBtn = document.getElementById("inpaint-crop-reset");
+  if (resetBtn) resetBtn.disabled = !crop.box;
+
+  const paddingInput = document.getElementById("inpaint-crop-padding");
+  if (paddingInput && document.activeElement !== paddingInput) {
+    paddingInput.value = String(crop.padding);
+  }
+  const minSizeInput = document.getElementById("inpaint-crop-min-size");
+  if (minSizeInput && document.activeElement !== minSizeInput) {
+    minSizeInput.value = String(crop.minSize);
+  }
+
+  updateInpaintCropOverlayVisibility(app);
+}
+
+function updateInpaintCropOverlayVisibility(appRef = null) {
+  const app = appRef || window.App;
+  const overlay = cropOverlay();
+  if (!overlay) return;
+  const state = getInpaintState(app);
+  const crop = getInpaintCropState(app);
+  if (!state || !crop) return;
+  const visible = crop.mode === "manual" && !!state.source;
+  overlay.style.display = visible ? "block" : "none";
+  overlay.style.pointerEvents = crop.selecting && visible ? "auto" : "none";
+  overlay.classList.toggle("selecting", !!crop.selecting && visible);
+}
+
+export function renderInpaintCropOverlay(appRef = null) {
+  const app = appRef || window.App;
+  const overlay = cropOverlay();
+  if (!overlay) return;
+  const state = getInpaintState(app);
+  const crop = getInpaintCropState(app);
+  if (!state || !crop) return;
+
+  const width = state.source ? state.source.width : overlay.width;
+  const height = state.source ? state.source.height : overlay.height;
+  if (overlay.width !== width) overlay.width = width;
+  if (overlay.height !== height) overlay.height = height;
+
+  const ctx = overlay.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, width, height);
+
+  const rect = crop.dragRect || crop.box;
+  if (!rect) return;
+  const x0 = Math.max(0, Math.min(width, rect[0]));
+  const y0 = Math.max(0, Math.min(height, rect[1]));
+  const x1 = Math.max(0, Math.min(width, rect[2]));
+  const y1 = Math.max(0, Math.min(height, rect[3]));
+  if (x1 <= x0 || y1 <= y0) return;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  ctx.beginPath();
+  ctx.rect(0, 0, width, height);
+  ctx.rect(x0, y0, x1 - x0, y1 - y0);
+  ctx.fill("evenodd");
+  ctx.restore();
+
+  const scale = Math.max(1, width / 1024);
+  const problem = getInpaintCropProblem(app);
+  ctx.strokeStyle = problem ? "#f59e0b" : (crop.selecting ? "#38bdf8" : "#a78bfa");
+  ctx.lineWidth = Math.max(2, Math.round(3 * scale));
+  ctx.strokeRect(
+    x0 + 0.5,
+    y0 + 0.5,
+    Math.max(0, x1 - x0 - 1),
+    Math.max(0, y1 - y0 - 1)
+  );
+
+  const handle = Math.max(5, Math.round(9 * scale));
+  ctx.fillStyle = ctx.strokeStyle;
+  const corners = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]];
+  corners.forEach(([cx, cy]) => {
+    ctx.fillRect(cx - handle / 2, cy - handle / 2, handle, handle);
+  });
+}
+
+export function updateInpaintCropStatus(appRef = null) {
+  const app = appRef || window.App;
+  const crop = getInpaintCropState(app);
+  if (!crop) return;
+
+  const coords = document.getElementById("inpaint-crop-coords");
+  if (coords) {
+    if (crop.mode !== "manual") {
+      coords.textContent = "";
+    } else if (!crop.box) {
+      coords.textContent = t("inpaint.crop.no_selection", "Область не выбрана");
+    } else {
+      const x0 = Math.round(crop.box[0]);
+      const y0 = Math.round(crop.box[1]);
+      const w = Math.round(crop.box[2] - crop.box[0]);
+      const h = Math.round(crop.box[3] - crop.box[1]);
+      coords.textContent = `X ${x0} - Y ${y0} - W ${w} - H ${h}`;
+    }
+  }
+
+  const warning = document.getElementById("inpaint-crop-warning");
+  if (warning) {
+    const problem = getInpaintCropProblem(app);
+    warning.style.display = problem ? "block" : "none";
+    if (problem) warning.textContent = problem;
+  }
+}
+
+export function initInpaintCropEvents(appRef = null) {
+  const app = appRef || window.App;
+  if (!app) return;
+  const overlay = cropOverlay();
+  if (!overlay) return;
+  if (overlay.dataset.eventsBound === "1") return;
+  overlay.dataset.eventsBound = "1";
+
+  overlay.addEventListener("pointerdown", (event) => {
+    const crop = getInpaintCropState(app);
+    const state = getInpaintState(app);
+    if (!crop || !state || !crop.selecting || event.button !== 0) return;
+    if (!state.source) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = pointerToCanvasPoint(overlay, event);
+    if (!point) return;
+    crop.dragStart = point;
+    crop.dragRect = null;
+    try { overlay.setPointerCapture(event.pointerId); } catch (_) {}
+    renderInpaintCropOverlay(app);
+  });
+
+  overlay.addEventListener("pointermove", (event) => {
+    const crop = getInpaintCropState(app);
+    const state = getInpaintState(app);
+    if (!crop || !state || !crop.selecting || !crop.dragStart) return;
+    const point = pointerToCanvasPoint(overlay, event);
+    if (!point) return;
+    crop.dragRect = normalizeInpaintCropRect(
+      crop.dragStart,
+      point,
+      state.source ? state.source.width : 0,
+      state.source ? state.source.height : 0
+    );
+    renderInpaintCropOverlay(app);
+    updateInpaintCropStatus(app);
+  });
+
+  const finish = (event, discard) => {
+    const crop = getInpaintCropState(app);
+    const state = getInpaintState(app);
+    if (!crop || !state || !crop.selecting || !crop.dragStart) return;
+    const point = pointerToCanvasPoint(overlay, event) || crop.dragStart;
+    const rect = normalizeInpaintCropRect(
+      crop.dragStart,
+      point,
+      state.source ? state.source.width : 0,
+      state.source ? state.source.height : 0
+    );
+    crop.dragStart = null;
+    crop.dragRect = null;
+    crop.selecting = false;
+    try { overlay.releasePointerCapture(event.pointerId); } catch (_) {}
+    if (!discard && rect && rect[2] - rect[0] >= 1 && rect[3] - rect[1] >= 1) {
+      crop.box = rect;
+    }
+    renderInpaintCropUI(app);
+    renderInpaintCropOverlay(app);
+    updateInpaintCropStatus(app);
+    const problem = getInpaintCropProblem(app);
+    if (problem) toast("warning", problem);
+  };
+
+  overlay.addEventListener("pointerup", (event) => finish(event, false));
+  overlay.addEventListener("pointercancel", (event) => finish(event, true));
 }
 
 // ---------- status ----------
@@ -802,6 +1239,7 @@ export function initInpaintMaskEvents(appRef = null) {
     painting = false;
     const layer = activeMaskLayer(state);
     if (layer) layer.surface.endStroke();
+    if (layer) layer.revision = (layer.revision || 0) + 1;
     if (layer && strokeMaskData !== layer.surface.toDataURL()) {
       pushHistory(state, strokeSnapshot);
     }
@@ -861,6 +1299,20 @@ export async function generateInpaint(appRef = null) {
   const cfg = parseFloat(document.getElementById("inpaint-cfg")?.value || "1.0");
   const seedRaw = document.getElementById("inpaint-seed")?.value?.trim();
   const seed = seedRaw === "" || seedRaw === "random" ? null : parseInt(seedRaw, 10);
+
+  // Generation area (crop mode).
+  const crop = getInpaintCropState(app) || { mode: "auto", padding: 64, minSize: 256, box: null };
+  if (crop.mode === "manual") {
+    const problem = getInpaintCropProblem(app);
+    if (problem) {
+      toast("warning", problem);
+      return;
+    }
+  }
+  const cropBox = crop.mode === "manual" && crop.box
+    ? crop.box.map((value) => Math.round(value))
+    : null;
+
   const maskDataUrl = layer.surface.toDataURL();
   const source = state.source;
   state.jobContext = {
@@ -885,6 +1337,10 @@ export async function generateInpaint(appRef = null) {
     mask_strength: 1.0,
     mask_grow: 6,
     mask_blur: 0.0,
+    mask_crop_mode: crop.mode || "auto",
+    mask_crop_padding: Math.round(Number(crop.padding) || 0),
+    mask_crop_min_size: Math.round(Number(crop.minSize) || 256),
+    mask_crop_box: cropBox,
   };
 
   state.generating = true;
@@ -1116,8 +1572,11 @@ export function initInpaintStudio(appRef = null) {
   const state = getInpaintState(app);
 
   initInpaintMaskEvents(app);
+  initInpaintCropEvents(app);
   renderInpaintModels(app);
   renderInpaintLayersUI(app);
+  renderInpaintCropUI(app);
+  updateInpaintCropStatus(app);
   updateInpaintStatus(app);
 
   const brushBtn = document.getElementById("inpaint-tool-brush");

@@ -1373,6 +1373,8 @@
 
             <div class="inpaint-mask-stack" id="inpaint-mask-stack"></div>
 
+            <canvas id="inpaint-crop-overlay" class="inpaint-crop-overlay" width="1024" height="1024" style="display: none;"></canvas>
+
           </div>
 
           <div class="inpaint-brush-cursor" id="inpaint-brush-cursor" style="display: none;"></div>
@@ -1490,6 +1492,64 @@
               <label><span data-i18n="generate.mask.softness">Мягкость</span> <span id="inpaint-softness-val">50%</span></label>
 
               <input type="range" id="inpaint-softness" min="0" max="1" step="0.05" value="0.5" oninput="App.setInpaintSoftness(this.value)">
+
+            </div>
+
+          </div>
+
+          <div class="inpaint-crop-block" id="inpaint-crop-block">
+
+            <div class="inpaint-crop-head">
+
+              <span data-i18n="inpaint.crop.title">Область генерации</span>
+
+              <select id="inpaint-crop-mode" class="inpaint-crop-mode" title="Режим области генерации" data-i18n-title="inpaint.crop.mode_title" onchange="App.setInpaintCropMode(this.value)">
+
+                <option value="auto" data-i18n="inpaint.crop.mode.auto">Автоматически</option>
+
+                <option value="parameters" data-i18n="inpaint.crop.mode.parameters">По параметрам</option>
+
+                <option value="manual" data-i18n="inpaint.crop.mode.manual">Вручную</option>
+
+              </select>
+
+            </div>
+
+            <div class="inpaint-crop-desc" id="inpaint-crop-desc" data-i18n="inpaint.crop.desc.auto">Область определяется автоматически по маске: отступ 64 px, минимальная сторона 256 px.</div>
+
+            <div class="inpaint-crop-params" id="inpaint-crop-params" style="display: none;">
+
+              <label>
+
+                <span data-i18n="inpaint.crop.padding">Отступ (px)</span>
+
+                <input type="number" id="inpaint-crop-padding" min="0" max="1024" step="1" value="64" oninput="App.setInpaintCropPadding(this.value)">
+
+              </label>
+
+              <label>
+
+                <span data-i18n="inpaint.crop.min_size">Мин. сторона (px)</span>
+
+                <input type="number" id="inpaint-crop-min-size" min="64" max="4096" step="16" value="256" oninput="App.setInpaintCropMinSize(this.value)">
+
+              </label>
+
+            </div>
+
+            <div class="inpaint-crop-manual" id="inpaint-crop-manual" style="display: none;">
+
+              <div class="inpaint-crop-actions">
+
+                <button type="button" class="inpaint-crop-btn" id="inpaint-crop-select" onclick="App.toggleInpaintCropSelection()" data-i18n="inpaint.crop.select">Выделить область</button>
+
+                <button type="button" class="inpaint-crop-btn" id="inpaint-crop-reset" onclick="App.resetInpaintCropSelection()" data-i18n="inpaint.crop.reset">Сбросить выделение</button>
+
+              </div>
+
+              <div class="inpaint-crop-coords" id="inpaint-crop-coords" data-i18n="inpaint.crop.no_selection">Область не выбрана</div>
+
+              <div class="inpaint-crop-warning" id="inpaint-crop-warning" style="display: none;"></div>
 
             </div>
 
