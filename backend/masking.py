@@ -337,6 +337,143 @@ def composite_with_mask(
     return Image.fromarray(out_rgba, "RGBA")
 
 
+# ---------- Crop-to-mask (real compute savings) ----------
+# Engines that "support" masks often still denoise the FULL frame (SD.CPP and
+# diffusers inpaint pipelines resample the whole latent), so a 1% mask costs as
+# much as a 100% one.  To get actual savings the source and mask are cropped to
+# the mask bounding box (plus padding for context), the engine runs on that
+# small crop, and the result is pasted back into the original frame.
+MASK_CROP_PADDING = 64
+MASK_CROP_ALIGN = 16
+MASK_CROP_MIN_SIZE = 256
+
+
+def mask_bbox(
+    mask: np.ndarray,
+    threshold: float = 0.004,
+) -> Optional[Tuple[int, int, int, int]]:
+    """Return ``(x0, y0, x1, y1)`` (exclusive) of the painted area, or None."""
+    arr = np.asarray(mask, dtype=np.float32)
+    if arr.ndim != 2 or arr.size == 0:
+        return None
+    ys, xs = np.nonzero(arr > float(threshold))
+    if xs.size == 0:
+        return None
+    return (
+        int(xs.min()),
+        int(ys.min()),
+        int(xs.max()) + 1,
+        int(ys.max()) + 1,
+    )
+
+
+def compute_crop_box(
+    mask: np.ndarray,
+    padding: int = MASK_CROP_PADDING,
+    align: int = MASK_CROP_ALIGN,
+    min_size: int = MASK_CROP_MIN_SIZE,
+) -> Optional[Tuple[int, int, int, int]]:
+    """Compute the engine crop box for a mask.
+
+    The box is the mask bounding box expanded by ``padding``, rounded outward
+    to the ``align`` grid (engines require multiples of 8/16), clamped to the
+    image, and grown to at least ``min_size`` so tiny strokes do not produce
+    degenerate latents.  Returns ``None`` for an empty mask.
+    """
+    arr = np.asarray(mask, dtype=np.float32)
+    if arr.ndim != 2 or arr.size == 0:
+        return None
+    height, width = arr.shape[:2]
+    bbox = mask_bbox(arr)
+    if bbox is None:
+        return None
+
+    x0, y0, x1, y1 = bbox
+    pad = max(0, int(padding))
+    x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+    x1, y1 = min(width, x1 + pad), min(height, y1 + pad)
+
+    align = max(1, int(align))
+    x0 = (x0 // align) * align
+    y0 = (y0 // align) * align
+    x1 = min(width, ((x1 + align - 1) // align) * align)
+    y1 = min(height, ((y1 + align - 1) // align) * align)
+
+    min_size = max(1, int(min_size))
+    if x1 - x0 < min_size:
+        extra = min_size - (x1 - x0)
+        grow_left = min(x0, extra // 2)
+        x0 -= grow_left
+        x1 = min(width, x1 + (extra - grow_left))
+        if x1 - x0 < min_size:
+            x0 = max(0, x1 - min_size)
+    if y1 - y0 < min_size:
+        extra = min_size - (y1 - y0)
+        grow_top = min(y0, extra // 2)
+        y0 -= grow_top
+        y1 = min(height, y1 + (extra - grow_top))
+        if y1 - y0 < min_size:
+            y0 = max(0, y1 - min_size)
+
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return int(x0), int(y0), int(x1), int(y1)
+
+
+def crop_array(mask: np.ndarray, box: Tuple[int, int, int, int]) -> np.ndarray:
+    """Crop a 2D float mask to ``box`` (returns a contiguous copy)."""
+    x0, y0, x1, y1 = box
+    return np.ascontiguousarray(np.asarray(mask, dtype=np.float32)[y0:y1, x0:x1])
+
+
+def crop_image(image: Image.Image, box: Tuple[int, int, int, int]) -> Image.Image:
+    """Crop a PIL image to ``box``."""
+    return image.crop(tuple(int(v) for v in box))
+
+
+def paste_crop_into_image(
+    generated: Image.Image,
+    original: Image.Image,
+    box: Tuple[int, int, int, int],
+) -> Image.Image:
+    """Paste a generated crop back into a copy of the original frame."""
+    x0, y0, x1, y1 = (int(v) for v in box)
+    target = original.copy()
+    region = generated.convert(target.mode)
+    if region.size != (x1 - x0, y1 - y0):
+        region = region.resize((x1 - x0, y1 - y0), Image.LANCZOS)
+    target.paste(region, (x0, y0))
+    return target
+
+
+def composite_crop_into_image(
+    generated: Image.Image,
+    original: Image.Image,
+    mask: np.ndarray,
+    box: Tuple[int, int, int, int],
+) -> Image.Image:
+    """Composite a generated crop over the original inside ``box`` only.
+
+    Outside the box the original is returned untouched (bit-identical), which
+    keeps the global compositing guarantee while the engine only ran on the
+    crop.  ``mask`` is the raw (not grown) mask in crop coordinates.
+    """
+    x0, y0, x1, y1 = (int(v) for v in box)
+    target = original.copy()
+    original_region = original.crop((x0, y0, x1, y1))
+    composed = composite_with_mask(generated, original_region, mask)
+    target.paste(composed, (x0, y0))
+    return target
+
+
+def save_image_file(image: Image.Image, directory: Path, name: str) -> Path:
+    """Persist an arbitrary PIL image as PNG inside ``directory``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    image.save(path, format="PNG")
+    return path
+
+
 def save_mask_file(mask: np.ndarray, directory: Path, name: str) -> Path:
     """Persist a mask as PNG inside ``directory`` (created on demand)."""
     directory.mkdir(parents=True, exist_ok=True)

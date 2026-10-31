@@ -3,6 +3,7 @@
   "name": "Qwen-Image-2.1 (Unsloth GGUF)",
   "family": "qwen",
   "pipeline": "text_to_image",
+  "supports_mask": true,
   "engine": "sd_cpp",
   "engine_version": "sd_cpp",
   "description": "Alibaba Qwen-Image-2.1 running via stable-diffusion.cpp with Unsloth GGUF quantizations. Features modular Q4_K_M / Q4_K_S DiT, Qwen3-VL-8B multimodal LLM encoder, and Wan VAE.",
