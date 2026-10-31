@@ -294,7 +294,7 @@ from backend.generation_queue import GenerationQueue
 from backend.history_paging import paginate
 from backend.presence import get_presence
 from backend.registry import get_registry
-from backend.registry.loader import model_supports_mask
+from backend.registry.loader import model_supports_mask, quantfunc_model_disabled
 
 
 
@@ -2273,11 +2273,7 @@ def create_app() -> FastAPI:
 
 
 
-            is_qf = getattr(m, "engine", "quantfunc") == "quantfunc"
-
-
-
-            qf_disabled = is_qf and not qf_enabled
+            qf_disabled = quantfunc_model_disabled(m, qf_enabled)
 
 
 
@@ -3430,11 +3426,7 @@ def create_app() -> FastAPI:
 
 
 
-            is_qf = getattr(m, "engine", "quantfunc") == "quantfunc"
-
-
-
-            qf_disabled = is_qf and not qf_enabled
+            qf_disabled = quantfunc_model_disabled(m, qf_enabled)
 
 
 
@@ -6048,11 +6040,13 @@ def create_app() -> FastAPI:
 
 
 
-        if getattr(model, "engine", "quantfunc") == "quantfunc" and not getattr(settings, "enable_quantfunc_models", False):
+        if quantfunc_model_disabled(
+            model, bool(getattr(settings, "enable_quantfunc_models", False))
+        ):
 
 
 
-            raise HTTPException(400, "Модели QuantFunc временно отключены из-за дефектов весов. Включите их в Настройках, если хотите протестировать.")
+            raise HTTPException(400, "Эта QuantFunc-модель временно отключена из-за дефектов весов (FLUX Klein). Включите QuantFunc-модели в Настройках, если хотите протестировать.")
 
 
 
@@ -8776,11 +8770,13 @@ def create_app() -> FastAPI:
 
 
 
-            if not getattr(settings, "enable_quantfunc_models", False):
+            if quantfunc_model_disabled(
+                model, bool(getattr(settings, "enable_quantfunc_models", False))
+            ):
 
 
 
-                raise HTTPException(400, "Модели QuantFunc временно отключены из-за дефектов весов. Включите их в Настройках, если хотите протестировать.")
+                raise HTTPException(400, "Эта QuantFunc-модель временно отключена из-за дефектов весов (FLUX Klein). Включите QuantFunc-модели в Настройках, если хотите протестировать.")
 
 
 
@@ -13177,11 +13173,13 @@ def create_app() -> FastAPI:
 
 
 
-            if not getattr(settings, "enable_quantfunc_models", False):
+            if quantfunc_model_disabled(
+                model, bool(getattr(settings, "enable_quantfunc_models", False))
+            ):
 
 
 
-                raise HTTPException(400, "Модели QuantFunc временно отключены. Выберите модель SD.CPP или SDNQ, либо используйте режим 'Manga Lite'.")
+                raise HTTPException(400, "Эта QuantFunc-модель временно отключена (дефектные веса FLUX Klein). Выберите модель SD.CPP или SDNQ, включите QuantFunc-модели в Настройках либо используйте режим 'Manga Lite'.")
 
 
 

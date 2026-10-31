@@ -692,9 +692,11 @@ class SDCppWorker:
                 if tok_path and tok_path.exists():
                     cmd.extend(["--tokenizer", str(tok_path)])
 
-        # ----- Inpaint mask preparation -----
+        # ----- Inpaint mask preparation (crop-to-mask) -----
         # SD.CPP applies --mask to the init image (white = regenerate,
         # black = preserve), so a mask always forces classic img2img mode.
+        # The engine runs only on a crop around the painted area; the result is
+        # pasted back into the original frame afterwards.
         mask_source = getattr(request, "mask_data_url", None) or (
             str(request.mask_path) if getattr(request, "mask_path", None) else None
         )
@@ -703,8 +705,12 @@ class SDCppWorker:
             from PIL import Image
             from .masking import (
                 MaskError,
+                compute_crop_box,
+                crop_array,
+                crop_image,
                 mask_file_name,
                 prepare_mask_arrays,
+                save_image_file,
                 save_mask_file,
             )
 
@@ -731,19 +737,42 @@ class SDCppWorker:
                 )
             except MaskError as exc:
                 raise ValueError(str(exc)) from exc
+
+            crop_box = compute_crop_box(engine_mask)
+            if crop_box is None:
+                raise ValueError("Mask is empty - paint the area to edit")
+            crop_w = crop_box[2] - crop_box[0]
+            crop_h = crop_box[3] - crop_box[1]
+            init_crop = crop_image(source_image, crop_box)
+            raw_crop = crop_array(raw_mask, crop_box)
+            engine_crop = crop_array(engine_mask, crop_box)
+
             mask_file = save_mask_file(
-                engine_mask,
+                engine_crop,
                 settings.output_dir / "masks",
                 mask_file_name("sd_cpp_mask"),
             )
+            init_file = save_image_file(
+                init_crop,
+                settings.output_dir / "masks",
+                mask_file_name(f"sd_cpp_init_{seed}"),
+            )
             mask_ctx = {
                 "array": raw_mask,
+                "crop_array": raw_crop,
+                "box": crop_box,
+                "crop_size": (crop_w, crop_h),
                 "file": mask_file,
+                "init_file": init_file,
                 "source_image": source_image,
             }
             emit(ProgressEvent(
                 status=JobStatus.INITIALIZING,
-                message=f"Mask ready ({source_image.size[0]}x{source_image.size[1]})",
+                message=(
+                    f"Mask ready: {crop_w}x{crop_h} crop "
+                    f"at ({crop_box[0]},{crop_box[1]}) of "
+                    f"{source_image.size[0]}x{source_image.size[1]}"
+                ),
             ))
 
         # ``mask_strength`` may legitimately be 0.0, so ``or`` must NOT be
@@ -773,8 +802,10 @@ class SDCppWorker:
 
                 if mask_ctx is not None:
                     # Masked img2img: SD.CPP only honours --mask together with
-                    # --init-img.  mask_strength maps to the denoising strength.
-                    cmd.extend(["-i", str(ref_path)])
+                    # --init-img.  Both files are the mask-bbox crop, so the
+                    # engine never denoises the full frame.  mask_strength maps
+                    # to the denoising strength.
+                    cmd.extend(["-i", str(mask_ctx["init_file"])])
                     cmd.extend(["--strength", str(round(max(0.01, min(1.0, mask_strength_value)), 2))])
                     cmd.extend(["--mask", str(mask_ctx["file"])])
                 elif ref_mode == "img2img":
@@ -871,9 +902,13 @@ class SDCppWorker:
             cmd.extend(["-n", " "])
 
         # Dimensions, steps, seed
+        # Masked runs use the crop size; the result is pasted back afterwards.
+        engine_width, engine_height = (
+            mask_ctx["crop_size"] if mask_ctx is not None else (width, height)
+        )
         cmd.extend([
-            "-W", str(width),
-            "-H", str(height),
+            "-W", str(engine_width),
+            "-H", str(engine_height),
             "--steps", str(request.steps or 20),
             "-s", str(seed),
             "-o", str(output_path),
@@ -1012,32 +1047,41 @@ class SDCppWorker:
             )
 
         # ----- Mask compositing (guaranteed preservation) -----
-        # result = generated * mask + original * (1 - mask), at the ORIGINAL
-        # resolution.  The raw engine output is kept as the Inpaint fragment.
+        # The engine ran on the mask-bbox crop; paste the composited crop back
+        # into the ORIGINAL frame.  Outside the crop the source stays
+        # bit-identical.  The raw engine output is kept as the Inpaint fragment.
         raw_fragment_rel = None
         if mask_ctx is not None:
             from PIL import Image
-            from .masking import composite_with_mask
+            from .masking import (
+                composite_crop_into_image,
+                paste_crop_into_image,
+            )
 
             try:
                 with Image.open(output_path) as gen_file:
                     generated_rgb = gen_file.convert("RGB")
                 source_image = mask_ctx["source_image"]
-                composite = composite_with_mask(
-                    generated_rgb, source_image, mask_ctx["array"]
+                composite = composite_crop_into_image(
+                    generated_rgb,
+                    source_image,
+                    mask_ctx["crop_array"],
+                    mask_ctx["box"],
                 )
                 composite.save(output_path, format="PNG")
 
                 frag_dir = settings.output_dir / "masks"
                 frag_dir.mkdir(parents=True, exist_ok=True)
                 frag_path = frag_dir / f"{output_path.stem}_raw.png"
-                generated_rgb.resize(source_image.size, Image.LANCZOS).save(
-                    frag_path, format="PNG"
-                )
+                paste_crop_into_image(
+                    generated_rgb, source_image, mask_ctx["box"]
+                ).save(frag_path, format="PNG")
                 raw_fragment_rel = f"masks/{frag_path.name}"
                 logger.info(
-                    "[sd_cpp] Mask composite applied -> %s (fragment: %s)",
+                    "[sd_cpp] Mask composite applied -> %s (crop %sx%s, fragment: %s)",
                     output_path.name,
+                    mask_ctx["crop_size"][0],
+                    mask_ctx["crop_size"][1],
                     raw_fragment_rel,
                 )
             except Exception as comp_err:
@@ -1077,6 +1121,10 @@ class SDCppWorker:
                     "mask_grow": int(getattr(request, "mask_grow", 0) or 0),
                     "mask_blur": float(getattr(request, "mask_blur", 0.0) or 0.0),
                     "mask_source": mask_ctx["file"].name,
+                    "mask_crop": {
+                        "box": list(mask_ctx["box"]),
+                        "size": list(mask_ctx["crop_size"]),
+                    },
                     "mask_raw_fragment": raw_fragment_rel,
                     "composite": "generated*mask + original*(1-mask)",
                 })

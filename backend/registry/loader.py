@@ -435,6 +435,24 @@ class ModelRegistry:
 
 
 # ---------- Mask capability helpers ----------
+# QuantFunc cards that ship known-defective (striped) upstream weights.  The
+# global ``enable_quantfunc_models`` switch only gates these cards; other QF
+# models (Qwen-Image / Qwen-Image-Edit, Z-Image, ...) stay available so
+# mask-capable Qwen works without enabling the defective FLUX weights.
+QF_DEFECTIVE_MODEL_IDS = frozenset({"flux_klein_4b", "flux_klein_9b"})
+
+
+def quantfunc_model_disabled(spec, qf_enabled: bool) -> bool:
+    """True when a QuantFunc card is blocked by the global safety switch."""
+    if spec is None:
+        return False
+    if getattr(spec, "engine", "quantfunc") != "quantfunc":
+        return False
+    if qf_enabled:
+        return False
+    return getattr(spec, "id", "") in QF_DEFECTIVE_MODEL_IDS
+
+
 def model_supports_mask(spec) -> bool:
     """True when the model card AND its engine can handle an inpaint mask.
 

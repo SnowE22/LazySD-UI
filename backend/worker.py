@@ -811,6 +811,12 @@ class Worker:
         engine_dir = cli_path.parent
         vram_budget = self._compute_vram_budget(gpu_info, model)
 
+        # Masked runs only denoise the mask-bbox crop; the result is pasted back
+        # into the original frame during compositing.
+        engine_width, engine_height = (
+            mask_ctx["crop_size"] if mask_ctx is not None else (width, height)
+        )
+
         args = [
             str(cli_path),
             "--model-dir", str(local_paths["model_dir"]),
@@ -820,8 +826,8 @@ class Worker:
             "--output", str(output_path),
             "--steps", str(request.steps),
             "--seed", str(seed),
-            "--width", str(width),
-            "--height", str(height),
+            "--width", str(engine_width),
+            "--height", str(engine_height),
         ]
 
         # Guidance scale / CFG & True CFG
@@ -906,7 +912,7 @@ class Worker:
             from .security import validate_float
             strength = validate_float(request.init_image_strength, "init_image_strength", min_val=0.01, max_val=1.0)
             args.extend([
-                "--ref-image", str(resolved_init),
+                "--ref-image", str(mask_ctx["init_file"] if mask_ctx is not None else resolved_init),
                 "--edit-strength", str(strength),
             ])
 
@@ -922,7 +928,7 @@ class Worker:
                     "Choose a mask-capable model or generate without a mask."
                 )
             mask_strength = _validate_float(request.mask_strength, "mask_strength", min_val=0.0, max_val=1.0)
-            mask_grow = max(0, min(64, int(request.mask_grow or 0)))
+            mask_grow = max(0, min(128, int(request.mask_grow or 0)))
             mask_blur = _validate_float(request.mask_blur, "mask_blur", min_val=0.0, max_val=64.0)
             args.extend([mask_arg, str(mask_ctx["file"])])
             args.extend(["--mask-strength", str(mask_strength)])
@@ -930,8 +936,10 @@ class Worker:
             if mask_blur > 0:
                 args.extend(["--mask-blur", str(mask_blur)])
             print(
-                "[worker] Inpaint mask: %s (%sx%s), strength=%.2f grow=%d blur=%.1f",
-                mask_ctx["file"].name, mask_ctx["source_size"][0], mask_ctx["source_size"][1],
+                "[worker] Inpaint mask: %s (crop %sx%s at %s), strength=%.2f grow=%d blur=%.1f",
+                mask_ctx["file"].name,
+                mask_ctx["crop_size"][0], mask_ctx["crop_size"][1],
+                mask_ctx["box"],
                 mask_strength, mask_grow, mask_blur,
             )
 
@@ -1080,30 +1088,41 @@ class Worker:
             final_path = cm.save_output(output_path)
 
         # ----- Phase 7.5: Mask compositing (guaranteed preservation) -----
-        # result = generated * mask + original * (1 - mask)
-        # The composite is produced at the ORIGINAL resolution, so every pixel
-        # outside the mask stays bit-identical to the source image. The raw
-        # engine output is kept next to it for the Inpaint "Result" layer.
+        # The engine only denoised the mask-bbox crop; composite inside that
+        # crop and paste it back.  Outside the crop the original is untouched
+        # (bit-identical).  The raw fragment is kept for the Inpaint result.
         raw_fragment_rel = None
         if mask_ctx is not None:
             from PIL import Image
-            from .masking import composite_with_mask
+            from .masking import (
+                composite_crop_into_image,
+                paste_crop_into_image,
+            )
 
             try:
                 with Image.open(final_path) as gen_file:
                     generated_rgb = gen_file.convert("RGB")
                 source_image = mask_ctx["source_image"]
-                composite = composite_with_mask(
-                    generated_rgb, source_image, mask_ctx["array"]
+                composite = composite_crop_into_image(
+                    generated_rgb,
+                    source_image,
+                    mask_ctx["crop_array"],
+                    mask_ctx["box"],
                 )
                 composite.save(final_path, format="PNG")
 
                 frag_dir = settings.output_dir / "masks"
                 frag_dir.mkdir(parents=True, exist_ok=True)
                 frag_path = frag_dir / f"{final_path.stem}_raw.png"
-                generated_rgb.resize(source_image.size, Image.LANCZOS).save(frag_path, format="PNG")
+                paste_crop_into_image(
+                    generated_rgb, source_image, mask_ctx["box"]
+                ).save(frag_path, format="PNG")
                 raw_fragment_rel = f"masks/{frag_path.name}"
-                print(f"[worker] Mask composite applied -> {final_path.name} (fragment: {raw_fragment_rel})")
+                print(
+                    f"[worker] Mask composite applied -> {final_path.name} "
+                    f"(crop {mask_ctx['crop_size'][0]}x{mask_ctx['crop_size'][1]}, "
+                    f"fragment: {raw_fragment_rel})"
+                )
             except Exception as comp_err:
                 print(f"[worker] Mask compositing failed: {comp_err}")
                 raise RuntimeError(f"Mask compositing failed: {comp_err}") from comp_err
@@ -1138,7 +1157,11 @@ class Worker:
                     "mask_strength": float(request.mask_strength),
                     "mask_grow": int(request.mask_grow or 0),
                     "mask_blur": float(request.mask_blur or 0.0),
-                    "mask_source": str(mask_ctx["source_path"].name),
+                    "mask_source": str(mask_ctx["file"].name),
+                    "mask_crop": {
+                        "box": list(mask_ctx["box"]),
+                        "size": list(mask_ctx["crop_size"]),
+                    },
                     "mask_raw_fragment": raw_fragment_rel,
                     "composite": "generated*mask + original*(1-mask)",
                 })
@@ -1192,16 +1215,24 @@ class Worker:
 
     # ---------- Mask (inpaint) ----------
     def _prepare_mask(self, request: GenerateRequest, settings, raw_source: str) -> dict:
-        """Decode the incoming mask and persist it as a PNG for the engine.
+        """Decode the incoming mask and persist a crop for the engine.
 
-        The decoded coverage array lives in SOURCE IMAGE coordinates, so it is
-        used both for the engine argument and for the final compositing.
+        The engine only sees the mask bounding box (plus padding), which is what
+        makes masked generation actually cheaper than a full frame.  The decoded
+        coverage arrays live in SOURCE IMAGE coordinates (``array``) and CROP
+        coordinates (``crop_array``); the latter is used for compositing the
+        engine output back into the original frame.
         """
         from PIL import Image
         from .masking import (
             MaskError,
+            compute_crop_box,
+            crop_array,
+            crop_image,
             decode_mask_to_float,
+            feather_mask,
             mask_file_name,
+            save_image_file,
             save_mask_file,
         )
 
@@ -1239,14 +1270,35 @@ class Worker:
         if mask_array is None:
             raise ValueError("Mask payload is empty")
 
+        # quantfunc.exe grows/blurs the mask itself (--mask-grow/--mask-blur),
+        # but the crop must already cover the grown area so the engine never
+        # clips the transition at the crop edge.
+        grow = max(0, min(128, int(request.mask_grow or 0)))
+        blur = max(0.0, min(64.0, float(request.mask_blur or 0.0)))
+        grown_mask = feather_mask(mask_array, grow=grow, blur=blur)
+        crop_box = compute_crop_box(grown_mask)
+        if crop_box is None:
+            raise ValueError("Mask is empty - paint the area to edit")
+        crop_w = crop_box[2] - crop_box[0]
+        crop_h = crop_box[3] - crop_box[1]
+
         mask_file = save_mask_file(
-            mask_array,
+            crop_array(mask_array, crop_box),
             settings.output_dir / "masks",
             mask_file_name("inpaint"),
         )
+        init_file = save_image_file(
+            crop_image(source_image, crop_box),
+            settings.output_dir / "masks",
+            mask_file_name("inpaint_init"),
+        )
         return {
             "array": mask_array,
+            "crop_array": crop_array(mask_array, crop_box),
+            "box": crop_box,
+            "crop_size": (crop_w, crop_h),
             "file": mask_file,
+            "init_file": init_file,
             "source_path": source_path,
             "source_size": source_size,
             "source_image": source_image,

@@ -713,9 +713,11 @@ class ExtrasWorker:
             if rp.exists():
                 ref_image_path = str(rp)
 
-        # ----- Inpaint mask preparation -----
-        # The raw mask is kept in the parent for the guaranteed compositing;
-        # the engine receives a PNG with grow/blur applied (white = edit).
+        # ----- Inpaint mask preparation (crop-to-mask) -----
+        # The engine only sees a crop around the painted area, so masked runs
+        # cost a fraction of a full-frame generation.  The raw mask is kept for
+        # the guaranteed compositing; the engine receives the cropped, grown
+        # mask (white = edit).
         mask_source = getattr(request, "mask_data_url", None) or (
             str(request.mask_path) if getattr(request, "mask_path", None) else None
         )
@@ -728,8 +730,12 @@ class ExtrasWorker:
             from PIL import Image
             from .masking import (
                 MaskError,
+                compute_crop_box,
+                crop_array,
+                crop_image,
                 mask_file_name,
                 prepare_mask_arrays,
+                save_image_file,
                 save_mask_file,
             )
 
@@ -745,19 +751,42 @@ class ExtrasWorker:
                 )
             except MaskError as exc:
                 raise ValueError(str(exc)) from exc
+
+            crop_box = compute_crop_box(engine_mask)
+            if crop_box is None:
+                raise ValueError("Mask is empty - paint the area to edit")
+            crop_w = crop_box[2] - crop_box[0]
+            crop_h = crop_box[3] - crop_box[1]
+            init_crop = crop_image(source_image, crop_box)
+            raw_crop = crop_array(raw_mask, crop_box)
+            engine_crop = crop_array(engine_mask, crop_box)
+
             mask_file = save_mask_file(
-                engine_mask,
+                engine_crop,
                 settings.output_dir / "masks",
                 mask_file_name(f"{engine}_mask"),
             )
+            init_file = save_image_file(
+                init_crop,
+                settings.output_dir / "masks",
+                mask_file_name(f"{engine}_init_{seed}"),
+            )
             mask_ctx = {
                 "array": raw_mask,
+                "crop_array": raw_crop,
+                "box": crop_box,
+                "crop_size": (crop_w, crop_h),
                 "file": mask_file,
+                "init_file": init_file,
                 "source_image": source_image,
             }
             emit(ProgressEvent(
                 status=JobStatus.INITIALIZING,
-                message=f"Mask ready ({source_image.size[0]}x{source_image.size[1]})",
+                message=(
+                    f"Mask ready: {crop_w}x{crop_h} crop "
+                    f"at ({crop_box[0]},{crop_box[1]}) of "
+                    f"{source_image.size[0]}x{source_image.size[1]}"
+                ),
             ))
 
         # ``mask_strength`` may legitimately be 0.0 (degenerate "no change"
@@ -830,10 +859,10 @@ class ExtrasWorker:
             "steps": steps,
             "cfg": cfg,
             "seed": seed,
-            "width": width,
-            "height": height,
+            "width": mask_ctx["crop_size"][0] if mask_ctx else width,
+            "height": mask_ctx["crop_size"][1] if mask_ctx else height,
             "output_path": str(output_path),
-            "init_image_path": ref_image_path,
+            "init_image_path": str(mask_ctx["init_file"]) if mask_ctx else ref_image_path,
             "mask_path": str(mask_ctx["file"]) if mask_ctx else None,
             "mask_strength": mask_strength_value,
             "lora_paths": lora_paths,
@@ -913,32 +942,39 @@ class ExtrasWorker:
             raise RuntimeError(f"{engine.upper()} process exited with code {proc.returncode}.\n{tail}")
 
         # ----- Mask compositing (guaranteed preservation) -----
-        # result = generated * mask + original * (1 - mask), at the ORIGINAL
-        # resolution.  The raw engine output is kept as the Inpaint fragment.
+        # The engine ran on the crop; paste the composited crop back into the
+        # ORIGINAL frame.  Outside the crop the source stays bit-identical.
         raw_fragment_rel = None
         if mask_ctx is not None:
             from PIL import Image
-            from .masking import composite_with_mask
+            from .masking import (
+                composite_crop_into_image,
+                paste_crop_into_image,
+            )
 
             try:
                 with Image.open(output_path) as gen_file:
                     generated_rgb = gen_file.convert("RGB")
                 source_image = mask_ctx["source_image"]
-                composite = composite_with_mask(
-                    generated_rgb, source_image, mask_ctx["array"]
+                composite = composite_crop_into_image(
+                    generated_rgb,
+                    source_image,
+                    mask_ctx["crop_array"],
+                    mask_ctx["box"],
                 )
                 composite.save(output_path, format="PNG")
 
                 frag_dir = settings.output_dir / "masks"
                 frag_dir.mkdir(parents=True, exist_ok=True)
                 frag_path = frag_dir / f"{output_path.stem}_raw.png"
-                generated_rgb.resize(source_image.size, Image.LANCZOS).save(
-                    frag_path, format="PNG"
-                )
+                paste_crop_into_image(
+                    generated_rgb, source_image, mask_ctx["box"]
+                ).save(frag_path, format="PNG")
                 raw_fragment_rel = f"masks/{frag_path.name}"
                 print(
                     f"[extras] Mask composite applied -> {output_path.name} "
-                    f"(fragment: {raw_fragment_rel})",
+                    f"(crop {mask_ctx['crop_size'][0]}x{mask_ctx['crop_size'][1]}, "
+                    f"fragment: {raw_fragment_rel})",
                     flush=True,
                 )
             except Exception as comp_err:
@@ -974,6 +1010,10 @@ class ExtrasWorker:
                     "mask_grow": int(getattr(request, "mask_grow", 0) or 0),
                     "mask_blur": float(getattr(request, "mask_blur", 0.0) or 0.0),
                     "mask_source": mask_ctx["file"].name,
+                    "mask_crop": {
+                        "box": list(mask_ctx["box"]),
+                        "size": list(mask_ctx["crop_size"]),
+                    },
                     "mask_raw_fragment": raw_fragment_rel,
                     "composite": "generated*mask + original*(1-mask)",
                 })
