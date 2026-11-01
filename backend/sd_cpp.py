@@ -929,6 +929,16 @@ class SDCppWorker:
         # Flash Attention for diffusion model
         cmd.append("--diffusion-fa")
 
+        # Memory optimization for GPUs with <= 12GB VRAM (ported from SnowE22: offload Text Encoder and params to CPU, tile VAE)
+        gpu_vram = gpu_info.vram_mb if gpu_info else 8192
+        if gpu_vram <= 12288 or getattr(request, "offload_te_cpu", False):
+            if "--backend" not in cmd:
+                cmd.extend(["--backend", "te=cpu"])
+            if "--params-backend" not in cmd:
+                cmd.extend(["--params-backend", "cpu"])
+            if "--vae-tiling" not in cmd:
+                cmd.append("--vae-tiling")
+
         # Sampling method & Noise / Eta
         noise_val = float(getattr(request, "noise", 0.0) or 0.0)
         ui_sampler = getattr(request, "sampler", None)

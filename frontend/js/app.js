@@ -1028,13 +1028,14 @@ const App = {
     }
 
     this.state.selectedModel = modelId;
+    try { localStorage.setItem("lazysd_selected_model", modelId); } catch (_) {}
 
     const select = document.getElementById("model-select");
     if (select) {
       select.value = modelId;
     }
 
-    if (this.state.currentTab !== "generate") {
+    if (this.state.currentTab !== "generate" && this.state.currentTab !== "inpaint") {
       this.switchTab("generate");
     }
 

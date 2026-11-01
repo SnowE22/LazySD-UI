@@ -6974,3 +6974,10 @@ body:not(.role-guest) #guest-mode-banner {
   background: var(--bg-warning);
   border-radius: var(--radius-sm);
 }
+
+/* Inpaint Preview Crisp Zoom (Pixel-sharp when zoomed in, ported from SnowE22) */
+#inpaint-composite.crisp-zoom,
+.inpaint-layer-canvas.crisp-zoom,
+#inpaint-crop-overlay.crisp-zoom {
+  image-rendering: pixelated !important;
+}
