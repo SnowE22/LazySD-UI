@@ -1105,5 +1105,6 @@
   "inpaint.crop.no_selection": "Область не выбрана",
   "inpaint.crop.error.no_box": "Сначала выделите область генерации на изображении",
   "inpaint.crop.error.too_small": "Область слишком маленькая (минимум 64 px по стороне)",
-  "inpaint.crop.error.not_covered": "Выделение не покрывает маску целиком — расширьте его"
+  "inpaint.crop.error.not_covered": "Выделение не покрывает маску целиком — расширьте его",
+  "models.card_editor.not_installed": "Не скачан"
 }

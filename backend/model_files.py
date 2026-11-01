@@ -135,7 +135,108 @@ def vae_download_refs(model, primary_repo: str) -> Optional[dict[str, str]]:
     }
 
 
-def vae_payload_from_args(engine_args: dict[str, Any], primary_repo: str, cache) -> Optional[dict[str, Any]]:
+FAMILY_GROUPS: dict[str, str] = {
+    "klein": "flux",
+    "flux": "flux",
+    "flux2": "flux",
+    "flux3": "flux",
+    "moss-image": "flux",
+    "qwen": "qwen",
+    "sdxl": "sdxl",
+}
+
+FAMILY_DIR_PATTERNS: dict[str, list[str]] = {
+    "flux": ["flux", "klein", "moss"],
+    "qwen": ["qwen"],
+    "sdxl": ["sdxl"],
+}
+
+VAE_FAMILY_CANDIDATES: dict[str, list[str]] = {
+    "flux": [
+        "vae/diffusion_pytorch_model.safetensors",
+        "vae/flux2-vae.safetensors",
+        "flux2-vae.safetensors",
+        "ae.safetensors",
+        "diffusion_pytorch_model.safetensors",
+    ],
+    "qwen": [
+        "texture_fix_vae_for_qwen_image_2.1_bf16.safetensors",
+        "qwen_image_2.1_vae_bf16.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+    ],
+    "sdxl": [
+        "sdxl_vae.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+    ],
+}
+
+
+def find_family_shared_vae(
+    family: str,
+    cache,
+    exclude_repo: str = "",
+) -> Optional[dict[str, Any]]:
+    """Locate an already-downloaded VAE from another model in the same architectural family.
+
+    FLUX models (FLUX.1, FLUX.2 Klein 4B/9B, FLUX.3 Image Klein) share an identical
+    16-channel VAE. Qwen models share the Qwen VAE. When a model card specifies a
+    VAE that has not yet been downloaded into its own folder, this fallback reuses
+    any existing compatible VAE on disk to avoid redundant downloads.
+    """
+    family_norm = str(family or "").strip().lower()
+    group = FAMILY_GROUPS.get(family_norm)
+    if not group:
+        for k, v in FAMILY_GROUPS.items():
+            if k in family_norm:
+                group = v
+                break
+    if not group:
+        return None
+
+    candidates = VAE_FAMILY_CANDIDATES.get(group, [])
+    patterns = FAMILY_DIR_PATTERNS.get(group, [])
+    cache_dir = getattr(cache, "cache_dir", None)
+    if not cache_dir or not cache_dir.is_dir():
+        return None
+
+    ex_names = {exclude_repo.lower(), exclude_repo.split("/")[-1].lower()} if exclude_repo else set()
+
+    dirs = [d for d in cache_dir.iterdir() if d.is_dir() and d.name.lower() not in ex_names]
+    dirs.sort(key=lambda d: (0 if family_norm and family_norm in d.name.lower() else 1, d.name.lower()))
+
+    for d in dirs:
+        d_lower = d.name.lower()
+        if patterns and not any(p in d_lower for p in patterns):
+            continue
+
+        for rel in candidates:
+            fpath = d / rel
+            try:
+                if fpath.is_file() and fpath.stat().st_size > 1024 * 1024:
+                    return {
+                        "repo_id": d.name,
+                        "path": rel,
+                        "installed": True,
+                        "shared": True,
+                        "shared_from": d.name,
+                        "local_repo_id": d.name,
+                        "local_path": rel,
+                        "local_file": fpath.as_posix(),
+                        "inferred": False,
+                        "resolved_repo_id": d.name,
+                        "resolved_path": rel,
+                    }
+            except OSError:
+                continue
+    return None
+
+
+def vae_payload_from_args(
+    engine_args: dict[str, Any],
+    primary_repo: str,
+    cache,
+    family: str = "",
+) -> Optional[dict[str, Any]]:
     """Describe the VAE for a model card: source, local target and cache state.
 
     A declared VAE is considered installed when any of its known local layouts
@@ -171,6 +272,10 @@ def vae_payload_from_args(engine_args: dict[str, Any], primary_repo: str, cache)
             return None
         inferred = _infer_repo_vae(cache.repo_dir_for(primary_repo))
         if not inferred:
+            if family:
+                shared = find_family_shared_vae(family, cache, exclude_repo=primary_repo)
+                if shared:
+                    return shared
             return None
         return {
             "repo_id": primary_repo,
@@ -211,6 +316,24 @@ def vae_payload_from_args(engine_args: dict[str, Any], primary_repo: str, cache)
             except OSError:
                 continue
 
+    # Fallback to family-level shared VAE
+    if family:
+        shared = find_family_shared_vae(family, cache, exclude_repo=primary_repo)
+        if shared:
+            return {
+                "repo_id": source_repo or primary_repo,
+                "path": source_path,
+                "installed": True,
+                "shared": True,
+                "shared_from": shared.get("shared_from"),
+                "local_repo_id": shared.get("local_repo_id"),
+                "local_path": shared.get("local_path"),
+                "local_file": shared.get("local_file"),
+                "inferred": False,
+                "resolved_repo_id": shared.get("resolved_repo_id"),
+                "resolved_path": shared.get("resolved_path"),
+            }
+
     return {
         "repo_id": source_repo or primary_repo,
         "path": source_path,
@@ -223,7 +346,8 @@ def vae_payload_from_args(engine_args: dict[str, Any], primary_repo: str, cache)
 
 def vae_payload(model, primary_repo: str, cache) -> Optional[dict[str, Any]]:
     """Model-object wrapper around :func:`vae_payload_from_args`."""
-    return vae_payload_from_args(getattr(model, "engine_args", {}) or {}, primary_repo, cache)
+    family = getattr(model, "family", "") or ""
+    return vae_payload_from_args(getattr(model, "engine_args", {}) or {}, primary_repo, cache, family=family)
 
 
 def _vae_files_in_repo(repo_id: str, repo_dir: Path) -> list[dict[str, Any]]:
@@ -281,7 +405,8 @@ def vae_payload_list(model, primary_repo: str, cache) -> list[dict[str, Any]]:
     """
     engine_args = getattr(model, "engine_args", {}) or {}
     primary_repo = str(primary_repo or "")
-    declared = vae_payload_from_args(engine_args, primary_repo, cache)
+    family = getattr(model, "family", "") or ""
+    declared = vae_payload_from_args(engine_args, primary_repo, cache, family=family)
 
     repos: list[str] = []
     for repo in (primary_repo, str(engine_args.get("vae_repo") or "")):
