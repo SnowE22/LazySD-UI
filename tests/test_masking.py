@@ -447,3 +447,54 @@ def test_custom_model_card_can_declare_mask_support():
 
     updated = _apply_card_updates(updated, {"supports_mask": False})
     assert updated.get("supports_mask") is False
+
+
+def test_crop_box_clamps_extreme_aspect_ratio():
+    # 1200 high by 100 wide (aspect ratio 12:1)
+    mask = np.zeros((1600, 1600), dtype=np.float32)
+    mask[200:1400, 750:850] = 1.0
+
+    box = compute_crop_box(mask, padding=32, align=16, min_size=64, max_aspect_ratio=2.0)
+    assert box is not None
+    x0, y0, x1, y1 = box
+    w = x1 - x0
+    h = y1 - y0
+    # Must be bounded by aspect ratio <= 2.0 (with grid alignment allowance)
+    assert h / float(w) <= 2.1
+    assert w % 16 == 0 and h % 16 == 0
+
+
+def test_scale_crop_for_safe_inference_and_composite():
+    from backend.masking import scale_crop_for_safe_inference, composite_crop_into_image
+    from PIL import Image
+
+    # Large 2000x1600 crop
+    crop_img = Image.new("RGB", (2000, 1600), (50, 100, 150))
+    crop_mask = np.ones((1600, 2000), dtype=np.float32)
+
+    safe_img, safe_mask, was_scaled = scale_crop_for_safe_inference(
+        crop_img, crop_mask, max_dim=1024, align=16
+    )
+    assert was_scaled is True
+    assert max(safe_img.size) <= 1024
+    assert safe_img.size[0] % 16 == 0 and safe_img.size[1] % 16 == 0
+    assert safe_mask.shape == (safe_img.size[1], safe_img.size[0])
+
+    # Crop within limits should not be scaled
+    small_img = Image.new("RGB", (512, 512), (10, 20, 30))
+    small_mask = np.zeros((512, 512), dtype=np.float32)
+    s_img, s_mask, s_scaled = scale_crop_for_safe_inference(small_img, small_mask, max_dim=1024)
+    assert s_scaled is False
+    assert s_img.size == (512, 512)
+
+    # Composite downscaled generated result back into original full-res canvas
+    orig = Image.new("RGB", (3000, 3000), (0, 0, 0))
+    box = (500, 500, 2500, 2100) # 2000x1600 box
+    # Simulate engine output at downscaled safe_img.size
+    gen_scaled = Image.new("RGB", safe_img.size, (255, 255, 255))
+    res = composite_crop_into_image(gen_scaled, orig, crop_mask, box)
+    assert res.size == (3000, 3000)
+    # Outside box must remain bit-identical (0, 0, 0)
+    assert res.getpixel((100, 100)) == (0, 0, 0)
+    # Inside box (mask is 1.0) must be white (255, 255, 255)
+    assert res.getpixel((600, 600)) == (255, 255, 255)

@@ -443,6 +443,7 @@ def resolve_crop_box(
     min_size: int = MASK_CROP_MIN_SIZE,
     manual_box=None,
     coverage_mask: Optional[np.ndarray] = None,
+    max_aspect_ratio: float = 2.0,
 ) -> Optional[Tuple[int, int, int, int]]:
     """Resolve the engine crop box for the requested crop mode.
 
@@ -514,6 +515,7 @@ def resolve_crop_box(
         padding=padding,
         align=align,
         min_size=min_size,
+        max_aspect_ratio=max_aspect_ratio,
     )
 
 
@@ -541,13 +543,16 @@ def compute_crop_box(
     padding: int = MASK_CROP_PADDING,
     align: int = MASK_CROP_ALIGN,
     min_size: int = MASK_CROP_MIN_SIZE,
+    max_aspect_ratio: float = 2.0,
 ) -> Optional[Tuple[int, int, int, int]]:
     """Compute the engine crop box for a mask.
 
     The box is the mask bounding box expanded by ``padding``, rounded outward
     to the ``align`` grid (engines require multiples of 8/16), clamped to the
     image, and grown to at least ``min_size`` so tiny strokes do not produce
-    degenerate latents.  Returns ``None`` for an empty mask.
+    degenerate latents. If ``max_aspect_ratio`` is set (> 0), extreme thin or
+    tall boxes are expanded symmetrically outward to stay within the ratio
+    bound. Returns ``None`` for an empty mask.
     """
     arr = np.asarray(mask, dtype=np.float32)
     if arr.ndim != 2 or arr.size == 0:
@@ -584,6 +589,35 @@ def compute_crop_box(
         if y1 - y0 < min_size:
             y0 = max(0, y1 - min_size)
 
+    if max_aspect_ratio and max_aspect_ratio > 0:
+        box_w = x1 - x0
+        box_h = y1 - y0
+        if box_w > 0 and box_h > 0:
+            if box_w > box_h * max_aspect_ratio:
+                target_h = min(height, int(math.ceil(box_w / float(max_aspect_ratio))))
+                if target_h > box_h:
+                    extra = target_h - box_h
+                    grow_top = min(y0, extra // 2)
+                    y0 -= grow_top
+                    y1 = min(height, y1 + (extra - grow_top))
+                    if y1 - y0 < target_h:
+                        y0 = max(0, y1 - target_h)
+            elif box_h > box_w * max_aspect_ratio:
+                target_w = min(width, int(math.ceil(box_h / float(max_aspect_ratio))))
+                if target_w > box_w:
+                    extra = target_w - box_w
+                    grow_left = min(x0, extra // 2)
+                    x0 -= grow_left
+                    x1 = min(width, x1 + (extra - grow_left))
+                    if x1 - x0 < target_w:
+                        x0 = max(0, x1 - target_w)
+
+            # Re-align outward
+            x0 = (x0 // align) * align
+            y0 = (y0 // align) * align
+            x1 = min(width, ((x1 + align - 1) // align) * align)
+            y1 = min(height, ((y1 + align - 1) // align) * align)
+
     if x1 <= x0 or y1 <= y0:
         return None
     return int(x0), int(y0), int(x1), int(y1)
@@ -615,6 +649,39 @@ def paste_crop_into_image(
     return target
 
 
+MAX_CROP_INFERENCE_DIM = 1024
+
+
+def scale_crop_for_safe_inference(
+    crop_img: Image.Image,
+    crop_mask: np.ndarray,
+    max_dim: int = MAX_CROP_INFERENCE_DIM,
+    align: int = 16,
+) -> Tuple[Image.Image, np.ndarray, bool]:
+    """Scale down crop image and mask if dimensions exceed max_dim.
+
+    Prevents CUDA Out-Of-Memory errors on large crops (e.g. 4K images).
+    Returns (safe_image, safe_mask, was_scaled).
+    """
+    w, h = crop_img.size
+    if max(w, h) <= max_dim or max_dim <= 0:
+        return crop_img, crop_mask, False
+
+    scale = float(max_dim) / float(max(w, h))
+    target_w = max(align, int(round((w * scale) / align)) * align)
+    target_h = max(align, int(round((h * scale) / align)) * align)
+
+    scaled_img = crop_img.resize((target_w, target_h), Image.LANCZOS)
+
+    mask_arr = np.asarray(crop_mask, dtype=np.float32)
+    mask_uint8 = (np.clip(mask_arr, 0.0, 1.0) * 255.0).astype(np.uint8)
+    mask_pil = Image.fromarray(mask_uint8, mode="L")
+    scaled_mask_pil = mask_pil.resize((target_w, target_h), Image.BILINEAR)
+    scaled_mask = np.asarray(scaled_mask_pil, dtype=np.float32) / 255.0
+
+    return scaled_img, scaled_mask, True
+
+
 def composite_crop_into_image(
     generated: Image.Image,
     original: Image.Image,
@@ -629,8 +696,13 @@ def composite_crop_into_image(
     """
     x0, y0, x1, y1 = (int(v) for v in box)
     target = original.copy()
+    target_w = x1 - x0
+    target_h = y1 - y0
+    gen_region = generated.convert(target.mode)
+    if gen_region.size != (target_w, target_h):
+        gen_region = gen_region.resize((target_w, target_h), Image.LANCZOS)
     original_region = original.crop((x0, y0, x1, y1))
-    composed = composite_with_mask(generated, original_region, mask)
+    composed = composite_with_mask(gen_region, original_region, mask)
     target.paste(composed, (x0, y0))
     return target
 

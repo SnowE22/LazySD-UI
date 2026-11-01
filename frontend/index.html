@@ -1377,7 +1377,7 @@
 
           </div>
 
-          <div class="inpaint-brush-cursor" id="inpaint-brush-cursor" style="display: none;"></div>
+          <div class="inpaint-brush-cursor" id="inpaint-brush-cursor" style="display: none;"><div class="inpaint-brush-cursor-inner" id="inpaint-brush-cursor-inner"></div></div>
 
           <div class="viewport-zoom-hud" id="inpaint-zoom-hud">
 
@@ -1424,6 +1424,13 @@
           </div>
 
           <div class="inpaint-prompt-block">
+
+            <div class="inpaint-presets-pills">
+              <button type="button" class="inpaint-preset-pill" onclick="App.applyInpaintPreset('clean_text')" title="Очистка текста / бабблов">💬 Текст/SFX</button>
+              <button type="button" class="inpaint-preset-pill" onclick="App.applyInpaintPreset('screentone')" title="Восстановление скринтона и текстуры">░ Скринтон</button>
+              <button type="button" class="inpaint-preset-pill" onclick="App.applyInpaintPreset('lineart')" title="Лайнарт и контуры">✒️ Лайнарт</button>
+              <button type="button" class="inpaint-preset-pill" onclick="App.applyInpaintPreset('clean_bg')" title="Очистка заднего плана">🖼️ Фон</button>
+            </div>
 
             <textarea id="inpaint-prompt" rows="2" data-i18n-placeholder="inpaint.prompt_placeholder" placeholder="Что должно быть на месте маски?"></textarea>
 
