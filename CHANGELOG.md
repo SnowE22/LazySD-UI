@@ -3,8 +3,88 @@
 Журнал коммитов для людей и ИИ-агентов. Перед началом работы сверяйся с
 `git log --oneline -20`, потому что этот файл обновляется не автоматически.
 
-> **Последний код-коммит:** `6be7d5f` — feat(webui): multi-VAE selection, localization and UI/engine fixes (2026-10-27).
+> **Последний код-коммит:** `07d074a` — feat(inpaint): add auto, parameterized and manual crop modes (2026-11-01).
 > Документация (этот файл и ссылки в MD) идёт отдельным коммитом `docs: ...`, его хеш смотри в `git log -1`.
+
+---
+
+## 2026-11-01
+
+### `07d074a` — feat(inpaint): add auto, parameterized and manual crop modes
+
+Три режима области генерации для Inpaint Studio (сокращают время диффузии и VRAM):
+- **auto**: автоматический bounding box нарисованной маски со стандартным паддингом 64 px и минимальной стороной 256 px.
+- **parameters**: настраиваемый паддинг (0–1024 px) и минимальный размер стороны (64–4096 px).
+- **manual**: ручное выделение прямоугольной области пользователем с выравниванием по 16-пиксельной сетке движков.
+- Строгая валидация покрытия: ручной прямоугольник обязан целиком закрывать нарисованную маску (проверяется общей функцией `resolve_crop_box()` в `backend/masking.py`), исключая неполный инпейнт.
+- Инспектор «Область генерации» (`Generation area`), оверлейный холст с зумом/панорамированием, интерактивные бейджи X/Y/W/H и блокировка запуска при некорректном выделении.
+- 13 автотестов в `tests/test_inpaint_crop_modes.py`.
+
+---
+
+## 2026-10-31
+
+### `00d4702` — fix(inpaint): crop masked generation to the mask bbox and unblock Qwen
+
+- Локальный кроп при инпейнте: исходное изображение и маска обрезаются до области маски (с выравниванием и min 256 px), движок диффузии выполняет инференс только на этой области, а результат бесшовно вклеивается обратно в исходный кадр при оригинальном разрешении (bit-identical снаружи маски).
+- Поддержка масок для Qwen-Image-2.1 GGUF через SD.CPP (режим `img2img + mask`).
+- Предохранитель QuantFunc ограничен только проблемными карточками FLUX Klein, чтобы Qwen и другие исправные карточки оставались доступными.
+- Восстановлена плавная прокрутка инспекторов во вкладках Generate и Inpaint.
+
+### `630145d` — fix(generate): bypass backend filter for non-QuantFunc engines
+
+- Обход фильтра `backend=lighting` для не-QuantFunc движков: Nunchaku, OrbitQuant и SD.CPP используют имя движка как бэкенд трансформера.
+- Устранена ошибка `"No compatible transformer found for backend=lighting"`, блокировавшая запуск инпейнта на движках Nunchaku/OrbitQuant/SD.CPP.
+
+### `9acb452` — feat(mask): enable FLUX inpaint masks for Nunchaku, OrbitQuant and SD.CPP
+
+- Расширение инпейнта на FLUX.2 Klein (Nunchaku, OrbitQuant) и SD.CPP GGUF.
+- Модуль `backend/masking.py`: единая полярность маски (белый = перегенерировать, чёрный = сохранить), функции растушёвки `feather_mask()` (дилатация + размытие по Гауссу) и подготовка массивов `prepare_mask_arrays()`.
+- Nunchaku / OrbitQuant: переключение на `Flux2KleinInpaintPipeline` при наличии маски, композитинг результата с исходником на полном разрешении.
+- SD.CPP: автопередача `-i <source>`, `--strength <mask_strength>` и `--mask <file>`.
+- Флаг `supports_mask: true` в манифестах совместимых моделей.
+
+---
+
+## 2026-10-30
+
+### `5de3882` — fix(mask): harden inpaint workflow and preserve source state
+
+- Комплексная стабилизация Inpaint Studio: изолированные ES6-модули `mask-core.js`, `generate-mask.js`, `inpaint.js`.
+- Сохранение исходного состояния изображения, холст маскирования с кистью/ластиком/размытием, корректная трансляция координат при Pan/Zoom.
+- Автотесты синхронизации фронтенда с бэкендом `tests/test_mask_frontend_sync.py` и базовые тесты маскирования `tests/test_masking.py`.
+
+### `507dd90` — feat(new-dock): add reference / ControlNet bar and LoRA section under VAE
+
+- Новый компактный док (`new-dock.js`): добавлена верхняя панель Reference / ControlNet (миниатюра, выбор режима Native Control / Canny / Img2Img, слайдер силы, поле внешнего ControlNet и кнопка очистки).
+- Поддержка вставки референсов через `Ctrl+V`.
+- Секция LoRA в поповере модели нового дока (размещена непосредственно под селектором VAE) с чекбоксами активации, слайдерами силы и бейджами совместимости.
+
+### `b386e28` — fix(ui): refreshConfig uses no-store, isolates render steps, resets encoder cache; re-render Hub after model card save
+
+- Защита от зависания UI: `refreshConfig()` запрашивает `/api/config` с `cache: "no-store"`, изолирует каждый шаг рендера в `try/catch` (ошибка одного элемента не ломает остальные).
+- Автоматический сброс кэша энкодеров и принудительный перерендер вкладки Models Hub сразу после сохранения карточки модели.
+
+### `73ffbfd` — feat(settings): fast HF downloads toggle (Xet/hf_transfer by hub version) and HF mirror endpoint in Settings > Network
+
+- Настройки сети в Settings → Network: переключатель быстрой загрузки и поле кастомного зеркала (endpoint) Hugging Face (например, `https://hf-mirror.com`).
+- Автоматический выбор ускоренного бэкенда в зависимости от версии `huggingface_hub` (Xet для 1.x, hf_transfer для 0.x).
+
+### `f9a5c9b` — fix(download): honor HF_HUB_ENABLE_HF_TRANSFER from env when hf_transfer is installed
+
+- Устранено принудительное отключение `HF_HUB_ENABLE_HF_TRANSFER=0` в `app.py`, блокировавшее многопоточный загрузчик из `start.bat`.
+
+### `f3ccf95` — perf(download): enable hf_transfer multi-threaded HF downloads
+
+- Добавлена зависимость `hf-transfer>=0.1.6` в `requirements.txt` и опция `HF_HUB_ENABLE_HF_TRANSFER=1` в `start.bat`.
+
+### `30ae859` & `7213efc` — fix(webui): restore model list and keep dock controls visible
+
+- Исправлено отображение списка моделей и выпадающих меню в поповерах альтернативного дока.
+
+### `58fdc2a` — feat(webui): add alternate LazySD Studio dock
+
+- Добавлен альтернативный плавающий компактный док LazySD Studio (`frontend/js/modules/new-dock.js`) с режимами Pin/Float, шторкой параметров и поповерами Model/Resolution/Params.
 
 ---
 
