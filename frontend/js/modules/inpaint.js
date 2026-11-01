@@ -1277,6 +1277,7 @@ export async function generateInpaint(appRef = null) {
   }
 
   const prompt = document.getElementById("inpaint-prompt")?.value?.trim() || "";
+  const negativePrompt = document.getElementById("inpaint-negative-prompt")?.value?.trim() || "";
   if (!prompt) {
     toast("warning", t("inpaint.hint.no_prompt", "Введите промпт"));
     return;
@@ -1322,9 +1323,13 @@ export async function generateInpaint(appRef = null) {
     maskDataUrl,
   };
 
+  const denoiseVal = parseFloat(document.getElementById("inpaint-strength")?.value || "1.0");
+  const strength = Number.isFinite(denoiseVal) ? Math.max(0.05, Math.min(1.0, denoiseVal)) : 1.0;
+
   const params = {
     model_id: modelId,
     prompt,
+    negative_prompt: negativePrompt,
     width: state.source.width,
     height: state.source.height,
     steps: Number.isFinite(steps) ? steps : 4,
@@ -1332,15 +1337,19 @@ export async function generateInpaint(appRef = null) {
     seed: Number.isFinite(seed) ? seed : null,
     sampler: document.getElementById("inpaint-sampler")?.value || "euler",
     init_image_path: state.source.path,
-    init_image_strength: 1.0,
+    init_image_strength: strength,
     mask: maskDataUrl,
-    mask_strength: 1.0,
+    mask_strength: strength,
     mask_grow: 6,
     mask_blur: 0.0,
     mask_crop_mode: crop.mode || "auto",
     mask_crop_padding: Math.round(Number(crop.padding) || 0),
     mask_crop_min_size: Math.round(Number(crop.minSize) || 256),
     mask_crop_box: cropBox,
+    loras: (Array.isArray(app.state.loras) ? app.state.loras : []).map(l => ({
+      name: l.name || l.file,
+      strength: Number.isFinite(Number(l.strength)) ? Number(l.strength) : 1.0,
+    })),
   };
 
   state.generating = true;
@@ -1636,10 +1645,91 @@ export function initInpaintStudio(appRef = null) {
     });
   }
 
+
+// ---------- LocalStorage persistence & crisp-zoom (ported from SnowE22) ----------
+function setupInpaintPersistence(app) {
+  try {
+    const pPrompt = localStorage.getItem("lazysd_inpaint_prompt");
+    if (pPrompt !== null) {
+      const el = document.getElementById("inpaint-prompt");
+      if (el) el.value = pPrompt;
+    }
+    const pNeg = localStorage.getItem("lazysd_inpaint_negative_prompt");
+    if (pNeg !== null) {
+      const el = document.getElementById("inpaint-negative-prompt");
+      if (el) el.value = pNeg;
+    }
+    const pSteps = localStorage.getItem("lazysd_inpaint_steps");
+    if (pSteps !== null) {
+      const el = document.getElementById("inpaint-steps");
+      if (el) el.value = pSteps;
+    }
+    const pCfg = localStorage.getItem("lazysd_inpaint_cfg");
+    if (pCfg !== null) {
+      const el = document.getElementById("inpaint-cfg");
+      if (el) el.value = pCfg;
+    }
+    const pStrength = localStorage.getItem("lazysd_inpaint_strength");
+    if (pStrength !== null) {
+      const el = document.getElementById("inpaint-strength");
+      if (el) el.value = pStrength;
+    }
+    const pSampler = localStorage.getItem("lazysd_inpaint_sampler");
+    if (pSampler !== null) {
+      const el = document.getElementById("inpaint-sampler");
+      if (el) el.value = pSampler;
+    }
+
+    // Attach listeners
+    const fields = [
+      ["inpaint-prompt", "lazysd_inpaint_prompt"],
+      ["inpaint-negative-prompt", "lazysd_inpaint_negative_prompt"],
+      ["inpaint-steps", "lazysd_inpaint_steps"],
+      ["inpaint-cfg", "lazysd_inpaint_cfg"],
+      ["inpaint-strength", "lazysd_inpaint_strength"],
+      ["inpaint-sampler", "lazysd_inpaint_sampler"],
+    ];
+    for (const [id, key] of fields) {
+      const el = document.getElementById(id);
+      if (el && !el.dataset.persistBound) {
+        el.dataset.persistBound = "1";
+        el.addEventListener("input", () => {
+          try { localStorage.setItem(key, el.value); } catch (_) {}
+        });
+        el.addEventListener("change", () => {
+          try { localStorage.setItem(key, el.value); } catch (_) {}
+        });
+      }
+    }
+  } catch (err) {
+    console.warn("[inpaint] localStorage persistence unavailable", err);
+  }
+}
+
+function setupInpaintCrispZoom() {
+  if (window._inpaintCrispBound) return;
+  window._inpaintCrispBound = true;
+  window.addEventListener("viewport-transform", (e) => {
+    if (e.detail?.mode === "inpaint") {
+      const zoom = Number(e.detail.zoom) || 1;
+      const isCrisp = zoom >= 1.25;
+      const comp = document.getElementById("inpaint-composite");
+      const overlay = document.getElementById("inpaint-crop-overlay");
+      if (comp) comp.classList.toggle("crisp-zoom", isCrisp);
+      if (overlay) overlay.classList.toggle("crisp-zoom", isCrisp);
+      document.querySelectorAll(".inpaint-layer-canvas").forEach((c) => {
+        c.classList.toggle("crisp-zoom", isCrisp);
+      });
+    }
+  });
+}
+
   if (!state._initialized) {
     state._initialized = true;
     setInpaintTool("brush", app);
     setInpaintBrushSize(state.brushSize, app);
     setInpaintSoftness(state.softness, app);
   }
+  setupInpaintPersistence(app);
+  setupInpaintCrispZoom();
 }

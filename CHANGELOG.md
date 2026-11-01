@@ -10,7 +10,18 @@
 
 ## 2026-11-01
 
-### `HEAD` — fix(models): family-level shared VAE fallback and Card Editor disk status
+### `HEAD` — feat(inpaint): port SnowE22 UX and memory optimizations
+
+Портированы удачные решения и оптимизации из форка [SnowE22/LazySD-UI](https://github.com/SnowE22/LazySD-UI) (автор: `SnowE22 <deramur19191@gmail.com>`):
+- **Персистентность в Inpaint Studio (`localStorage`)**: промпт, негативный промпт, шаги, CFG, сила изменения (denoise strength) и сэмплер теперь автоматически сохраняются в `localStorage` и восстанавливаются при обновлении страницы или перезапуске браузера.
+- **Поддержка негативного промпта, Denoise strength и LoRA**: в Inpaint Studio добавлены поле негативного промпта и ввод силы изменения (Denoise strength), а также проброс активного стека LoRA в генерацию.
+- **Неразрывный выбор моделей (Tab preservation)**: выбор модели в UI больше не выбивает пользователя принудительно на вкладку Generate, если он находится в Inpaint Studio (`this.state.currentTab !== "inpaint"`).
+- **Pixel-sharp зум для манги и пиксель-арта**: добавлен режим четкого масштабирования (`image-rendering: pixelated`) при зуме холста $\ge 1.25\times$, устраняющий размытие штрихов и скринтонов.
+- **VRAM-оптимизация для SD.CPP**: на GPU с $\le 12$ ГБ VRAM для `sd-cli.exe` автоматически активируются `--backend te=cpu`, `--params-backend cpu` и `--vae-tiling` для предотвращения падений с OOM при инференсе больших GGUF-моделей.
+
+---
+
+### `06be18f` — fix(models): family-level shared VAE fallback and Card Editor disk status
 
 - **Семейный VAE fallback (`find_family_shared_vae`)**: FLUX-модели (`klein`, `flux`, `flux3`, `moss-image`) и Qwen-модели автоматически переиспользуют уже скачанные VAE того же семейства из кэша (например, `FLUX.2-klein-9B-Nunchaku` или `flux-3-image-klein-nunchaku`), исключая повторные загрузки одного и того же 16-канального VAE для каждой вариации модели.
 - **Статус в Model Hub**: секция VAE на карточках моделей теперь учитывает общесемейные VAE и отображает бейдж `✓ На диске (из <shared_model>)` без ложной кнопки `[Скачать]`; предупреждение `[нужно скачать]` отображается только если VAE действительно отсутствует везде на диске.
