@@ -756,13 +756,18 @@ class SDCppWorker:
             raw_crop = crop_array(raw_mask, crop_box)
             engine_crop = crop_array(engine_mask, crop_box)
 
+            from .masking import scale_crop_for_safe_inference
+            safe_init, safe_engine_mask, _ = scale_crop_for_safe_inference(
+                init_crop, engine_crop, max_dim=1024
+            )
+
             mask_file = save_mask_file(
-                engine_crop,
+                safe_engine_mask,
                 settings.output_dir / "masks",
                 mask_file_name("sd_cpp_mask"),
             )
             init_file = save_image_file(
-                init_crop,
+                safe_init,
                 settings.output_dir / "masks",
                 mask_file_name(f"sd_cpp_init_{seed}"),
             )
@@ -770,7 +775,7 @@ class SDCppWorker:
                 "array": raw_mask,
                 "crop_array": raw_crop,
                 "box": crop_box,
-                "crop_size": (crop_w, crop_h),
+                "crop_size": safe_init.size,
                 "crop_mode": str(crop_mode),
                 "crop_padding": int(getattr(request, "mask_crop_padding", 64) or 0),
                 "crop_min_size": int(getattr(request, "mask_crop_min_size", 256) or 0),

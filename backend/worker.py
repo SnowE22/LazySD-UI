@@ -1301,22 +1301,29 @@ class Worker:
             raise ValueError("Mask is empty - paint the area to edit")
         crop_w = crop_box[2] - crop_box[0]
         crop_h = crop_box[3] - crop_box[1]
+        raw_crop_arr = crop_array(mask_array, crop_box)
+        raw_init_img = crop_image(source_image, crop_box)
+
+        from .masking import scale_crop_for_safe_inference
+        safe_img, safe_mask, _ = scale_crop_for_safe_inference(
+            raw_init_img, raw_crop_arr, max_dim=1024
+        )
 
         mask_file = save_mask_file(
-            crop_array(mask_array, crop_box),
+            safe_mask,
             settings.output_dir / "masks",
             mask_file_name("inpaint"),
         )
         init_file = save_image_file(
-            crop_image(source_image, crop_box),
+            safe_img,
             settings.output_dir / "masks",
             mask_file_name("inpaint_init"),
         )
         return {
             "array": mask_array,
-            "crop_array": crop_array(mask_array, crop_box),
+            "crop_array": raw_crop_arr,
             "box": crop_box,
-            "crop_size": (crop_w, crop_h),
+            "crop_size": safe_img.size,
             "crop_mode": str(crop_mode),
             "crop_padding": int(getattr(request, "mask_crop_padding", 64) or 0),
             "crop_min_size": int(getattr(request, "mask_crop_min_size", 256) or 0),

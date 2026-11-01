@@ -6643,6 +6643,40 @@ body:not(.role-guest) #guest-mode-banner {
   pointer-events: none;
   transform: translate(-50%, -50%);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.inpaint-brush-cursor-inner {
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  box-sizing: border-box;
+  display: none;
+}
+.inpaint-presets-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.inpaint-preset-pill {
+  background: var(--bg-card, #1e1e24);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+  color: var(--text-muted, #9ca3af);
+  border-radius: 12px;
+  padding: 3px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.inpaint-preset-pill:hover {
+  background: var(--bg-hover, #2a2a32);
+  color: #fff;
+  border-color: var(--accent, #6366f1);
 }
 .inpaint-empty-hint {
   position: absolute;

@@ -13,7 +13,7 @@ import {
   MASK_DEFAULT_SOFTNESS,
 } from "./mask-core.js";
 
-const INPAINT_MAX_HISTORY = 20;
+const INPAINT_MAX_HISTORY = 12;
 
 let layerSeq = 0;
 function nextLayerId(prefix) {
@@ -690,6 +690,7 @@ export function setInpaintSoftness(value, appRef = null) {
   if (label) label.textContent = `${Math.round(state.softness * 100)}%`;
   const layer = activeMaskLayer(state);
   if (layer) layer.surface.softness = state.softness;
+  updateBrushCursor(app);
 }
 
 export function clearInpaintMask(appRef = null) {
@@ -1179,6 +1180,20 @@ function updateBrushCursor(app) {
   const diameter = Math.max(4, state.brushSize * scale);
   cursor.style.width = `${diameter}px`;
   cursor.style.height = `${diameter}px`;
+
+  const inner = cursor.querySelector(".inpaint-brush-cursor-inner") || document.getElementById("inpaint-brush-cursor-inner");
+  const softness = Number(state.softness) || 0;
+  if (inner && softness > 0) {
+    const innerRatio = Math.max(0.05, 1 - softness);
+    const innerDiam = Math.max(2, diameter * innerRatio);
+    inner.style.display = "block";
+    inner.style.width = `${innerDiam}px`;
+    inner.style.height = `${innerDiam}px`;
+    cursor.style.borderStyle = "dashed";
+  } else if (inner) {
+    inner.style.display = "none";
+    cursor.style.borderStyle = "solid";
+  }
 }
 
 export function initInpaintMaskEvents(appRef = null) {
@@ -1732,4 +1747,40 @@ function setupInpaintCrispZoom() {
   }
   setupInpaintPersistence(app);
   setupInpaintCrispZoom();
+}
+
+
+export function applyInpaintPreset(key, appRef = null) {
+  const app = appRef || window.App;
+  const presets = {
+    clean_text: {
+      prompt: "clean empty dialog speech bubble, seamless white fill, clean background, monochrome manga",
+      negative: "text, letters, words, japanese, kanji, sound effects, sfx, speech, artifacts, watermark",
+    },
+    screentone: {
+      prompt: "uniform monochrome manga screentone texture, fine halftone dot pattern, seamless shading",
+      negative: "text, letters, sfx, distorted pattern, moire, noisy lines, blur",
+    },
+    lineart: {
+      prompt: "clean sharp manga anime lineart, black ink line drawing, detailed, crisp monochrome",
+      negative: "blurry, smudged, low contrast, grayscale noise, text, sfx",
+    },
+    clean_bg: {
+      prompt: "clean detailed manga background scenery, seamless perspective, monochrome screen tone",
+      negative: "speech bubble, dialogue, text, character cutouts, watermark, signature",
+    },
+  };
+  const p = presets[key];
+  if (!p) return;
+  const promptEl = document.getElementById("inpaint-prompt");
+  const negEl = document.getElementById("inpaint-negative-prompt");
+  if (promptEl) {
+    promptEl.value = p.prompt;
+    try { localStorage.setItem("lazysd_inpaint_prompt", p.prompt); } catch (_) {}
+  }
+  if (negEl) {
+    negEl.value = p.negative;
+    try { localStorage.setItem("lazysd_inpaint_negative_prompt", p.negative); } catch (_) {}
+  }
+  if (app?.toast) app.toast("info", `Пресет: ${p.prompt.slice(0, 32)}...`);
 }
