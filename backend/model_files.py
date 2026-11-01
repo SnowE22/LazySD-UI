@@ -587,7 +587,8 @@ def delete_targets(cache, targets: list[tuple[str, str]]) -> dict[str, Any]:
     touched_dirs: set[Path] = set()
 
     for repo, rel in targets:
-        base_path = cache.path_for(repo, rel)
+        existing_path = cache.find_existing_file(repo, rel)
+        base_path = existing_path or cache.path_for(repo, rel)
         try:
             if not base_path.resolve().is_relative_to(cache_root):
                 continue

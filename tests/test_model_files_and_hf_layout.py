@@ -434,3 +434,36 @@ def test_models_hub_delete_and_downloads_panel_wiring():
     assert "App.clearFinishedDownloads()" in index_html
     assert ".downloads-panel" in styles_css
     assert ".btn-delete-files" in styles_css
+
+
+def test_subfolder_transformer_detection_and_size_tolerance(tmp_path):
+    from backend.cache import CacheManager, FileState
+
+    cache = CacheManager(cache_dir=tmp_path / "cache")
+    repo_id = "test/subfolder-model"
+    rd = cache.repo_dir_for(repo_id)
+
+    # 1. Place file in transformer/ subfolder while querying by flat filename
+    tr_file = rd / "transformer" / "model.safetensors"
+    tr_file.parent.mkdir(parents=True, exist_ok=True)
+    # 5.80 GB decimal vs 6.22 GB binary mismatch simulation (7% difference)
+    # We write 5000 bytes with expected 5368 bytes (6.8% difference)
+    tr_file.write_bytes(b"x" * 5000)
+
+    found = cache.find_existing_file(repo_id, "model.safetensors")
+    assert found == tr_file, f"Expected {tr_file}, got {found}"
+
+    entry = cache.check_file(
+        repo_id=repo_id,
+        file_path="model.safetensors",
+        expected_size=5368,
+        compute_checksum=False,
+    )
+    assert entry.state == FileState.INSTALLED
+    assert entry.actual_size == 5000
+
+
+def test_te_missing_guard_in_app_js():
+    app_js = (ROOT / "frontend" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "const teMissing = teList.length > 0 && !teList.some(te => te.installed);" in app_js
+    assert "const installedVar = variants.find(v => v.state === \"installed\" || v.installed);" in app_js

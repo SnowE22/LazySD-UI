@@ -1202,7 +1202,7 @@ const App = {
       };
 
       const teList = Array.isArray(model.text_encoders) ? model.text_encoders : [];
-      const teMissing = teList.some(te => !te.installed);
+      const teMissing = teList.length > 0 && !teList.some(te => te.installed);
       const teRows = teList.map((te, idx) => {
         const tech = [te.repo_id, te.path || te.file, te.precision, te.size_gb ? `${te.size_gb} GB` : ""]
           .filter(Boolean).join(" · ");
@@ -2177,7 +2177,8 @@ const App = {
 
     // Select preferred variant if provided, otherwise first recommended
     const preferred = preferredVariantId ? variants.find(v => v.id === preferredVariantId) : null;
-    const activeVar = preferred || recommended[0] || others[0] || variants[0];
+    const installedVar = variants.find(v => v.state === "installed" || v.installed);
+    const activeVar = preferred || installedVar || recommended[0] || others[0] || variants[0];
     if (activeVar) {
       variantSelect.value = activeVar.id;
       this.state.selectedVariant = activeVar.id;

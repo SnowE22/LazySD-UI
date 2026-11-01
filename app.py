@@ -1713,105 +1713,59 @@ def create_app() -> FastAPI:
 
 
     def _is_te_installed(te: dict, repo_dir: Optional[Path], cache: CacheManager) -> bool:
-
-
-
         te_f = te.get("file", "")
-
-
-
         if not te_f:
-
-
-
             return False
-
-
-
         if repo_dir:
-
-
-
-            if (repo_dir / te_f).exists() or (repo_dir / "text_encoders" / te_f).exists():
-
-
-
-                return True
-
-
-
+            for sub in ("", "text_encoders", "text_encoder"):
+                p = (repo_dir / sub / te_f) if sub else (repo_dir / te_f)
+                if p.exists():
+                    return True
             if te.get("id") == "bf16" and (repo_dir / "qwen3vl_8b_bf16.safetensors").exists():
-
-
-
                 return True
-
-
-
-        if isinstance(te.get("source"), dict) and te["source"].get("repo_id"):
-
-
-
-            sec_dir = cache.repo_dir_for(te["source"]["repo_id"])
-
-
-
-            if (sec_dir / te_f).exists() or (sec_dir / "text_encoders" / te_f).exists():
-
-
-
+        t_repo = (te.get("source") or {}).get("repo_id") or te.get("repo")
+        if t_repo:
+            found = cache.find_existing_file(t_repo, te_f)
+            if found and found.is_file():
                 return True
-
-
-
+            sec_dir = cache.repo_dir_for(t_repo)
+            for sub in ("", "text_encoders", "text_encoder"):
+                p = (sec_dir / sub / te_f) if sub else (sec_dir / te_f)
+                if p.exists():
+                    return True
         return False
 
-
-
-
-
-
-
     def _repo_file_installed(repo_id: str, file_path: str, cache: CacheManager) -> bool:
-
         if not repo_id or not file_path:
-
             return False
-
         try:
-
-            return (cache.repo_dir_for(repo_id) / file_path).is_file()
-
+            found = cache.find_existing_file(repo_id, file_path)
+            return bool(found and found.is_file())
         except Exception:
-
             return False
-
-
 
     def _is_aux_installed(aux: dict, primary_repo: str, cache: CacheManager) -> bool:
-
         if not isinstance(aux, dict):
-
             return False
-
         return _repo_file_installed(aux.get("repo_id") or primary_repo, str(aux.get("path") or ""), cache)
 
-
-
     def _transformer_installed(model, variant, cache: CacheManager) -> bool:
-
         try:
-
             repo_id = getattr(variant, "repo_id", None) or (model.sources.primary.repo_id if model.sources and model.sources.primary else "")
-
-            if not repo_id or not variant.path:
-
+            v_path = getattr(variant, "path", None)
+            if not repo_id or not v_path:
                 return False
-
-            return (cache.repo_dir_for(repo_id) / variant.path).is_file()
-
+            found = cache.find_existing_file(repo_id, v_path)
+            if found and found.is_file():
+                return True
+            if getattr(model, "is_custom", False):
+                from backend.custom_models import get_custom_models_dir
+                custom_dir = get_custom_models_dir()
+                p = Path(v_path)
+                if p.is_file() or (custom_dir / v_path).is_file():
+                    return True
+            return False
         except Exception:
-
             return False
 
 
@@ -2005,110 +1959,40 @@ def create_app() -> FastAPI:
 
 
             if getattr(model, "engine", "quantfunc") == "sdnq":
-
-
-
                 repo_id = model.sources.primary.repo_id if model.sources else ""
-
-
-
                 repo_dir = cache.repo_dir_for(repo_id) if repo_id else get_settings().models_dir
-
-
-
                 if not (repo_dir / "model_index.json").exists():
-
-
-
                     return False
-
-
-
-                if not (repo_dir / "vae" / "diffusion_pytorch_model.safetensors").exists():
-
-
-
+                vae_ok = (repo_dir / "vae" / "diffusion_pytorch_model.safetensors").exists() or bool(cache.find_existing_file(repo_id, "vae/diffusion_pytorch_model.safetensors"))
+                if not vae_ok:
                     return False
-
-
-
                 if getattr(model, "text_encoders", None):
-
-
-
                     if not any(_is_te_installed(te, repo_dir, cache) for te in model.text_encoders):
-
-
-
                         return False
-
-
-
-                for t in model.transformers:
-
-
-
-                    if t.recommended and (repo_dir / t.path).exists():
-
-
-
-                        return True
-
-
-
-                return False
-
-
-
-
-
-
+                return any(_transformer_installed(model, t, cache) for t in getattr(model, "transformers", []))
 
             if getattr(model, "engine", "quantfunc") == "orbitquant":
-
-
-
                 repo_id = model.sources.primary.repo_id if model.sources else ""
-
-
-
                 repo_dir = cache.repo_dir_for(repo_id) if repo_id else get_settings().models_dir
-
-
-
-                return (repo_dir / "model.safetensors").exists() or any((repo_dir / t.path).exists() for t in model.transformers)
-
-
-
-
-
-
+                has_model = (repo_dir / "model.safetensors").exists()
+                has_tr = any(_transformer_installed(model, t, cache) for t in getattr(model, "transformers", []))
+                if not (has_model or has_tr):
+                    return False
+                if getattr(model, "text_encoders", None):
+                    if not any(_is_te_installed(te, repo_dir, cache) for te in model.text_encoders):
+                        return False
+                return True
 
             if getattr(model, "engine", "quantfunc") == "nunchaku":
-
-
-
                 repo_id = model.sources.primary.repo_id if model.sources else ""
-
-
-
                 repo_dir = cache.repo_dir_for(repo_id) if repo_id else get_settings().models_dir
-
-
-
-                for t in model.transformers:
-
-
-
-                    if (repo_dir / t.path).exists():
-
-
-
-                        return True
-
-
-
-                return False
+                has_tr = any(_transformer_installed(model, t, cache) for t in getattr(model, "transformers", []))
+                if not has_tr:
+                    return False
+                if getattr(model, "text_encoders", None):
+                    if not any(_is_te_installed(te, repo_dir, cache) for te in model.text_encoders):
+                        return False
+                return True
 
 
 
@@ -4286,10 +4170,7 @@ def create_app() -> FastAPI:
 
 
             t_repo = getattr(t, "repo_id", None) or repo_id
-
-
-
-            use_repo = t_repo if (cache.repo_dir_for(t_repo) / t.path).exists() else repo_id
+            use_repo = t_repo if (cache.find_existing_file(t_repo, t.path) or (cache.repo_dir_for(t_repo) / t.path).exists()) else repo_id
 
 
 
@@ -9040,10 +8921,8 @@ def create_app() -> FastAPI:
 
 
         if not selected and transformers_for_gpu:
-
-
-
-            selected = transformers_for_gpu[0]
+            installed_for_gpu = [t for t in transformers_for_gpu if _transformer_installed(model, t, cache)]
+            selected = installed_for_gpu[0] if installed_for_gpu else transformers_for_gpu[0]
 
 
 
