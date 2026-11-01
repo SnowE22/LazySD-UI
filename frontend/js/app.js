@@ -1227,12 +1227,12 @@ const App = {
       const vaeList = (Array.isArray(model.vae_files) && model.vae_files.length)
         ? model.vae_files
         : (model.vae ? [model.vae] : []);
-      const vaeMissing = vaeList.some(vae => !vae.installed);
+      const vaeMissing = vaeList.length > 0 && !vaeList.some(vae => vae.installed);
       const vaeRows = vaeList.map((vae, idx) => {
         const tech = [vae.repo_id, vae.path].filter(Boolean).join(" · ");
         const fileName = String(vae.path || "").split("/").pop() || "VAE";
-        const actions = (vae.installed && vae.inferred)
-          ? `<div class="variant-actions"><span class="variant-state installed" title="${escapeHtml(t("models.component_on_disk"))}">${ICON_CHECK}<span>${escapeHtml(t("models.component_on_disk"))}</span></span></div>`
+        const actions = (vae.installed && (vae.inferred || vae.shared))
+          ? `<div class="variant-actions"><span class="variant-state installed" title="${escapeHtml(t("models.component_on_disk"))}">${ICON_CHECK}<span>${escapeHtml(t("models.component_on_disk"))}${vae.shared ? ` (${escapeHtml(vae.shared_from || t("common.shared"))})` : ""}</span></span></div>`
           : componentAction("vae", idx, "", vae.installed, "");
         return `
           <div class="component-item">
@@ -4943,16 +4943,27 @@ const App = {
         }
         return { repo_id: card.repo_id || "", path: String(aux || ""), size_gb: 0 };
       });
+      const existingModel = (this.state.models || []).find(m => m.id === modelId);
+      const existingVae = existingModel?.vae || (Array.isArray(existingModel?.vae_files) ? existingModel.vae_files[0] : null);
       this.state.modelCardEditor = {
         modelId,
         repoId: card.repo_id || "",
         manifest: card,
-        te: textEncoders,
+        te: textEncoders.map(te => {
+          const matched = (existingModel?.text_encoders || []).find(e => e.id === te.id || e.path === te.path || e.file === te.file);
+          return {
+            ...te,
+            installed: Boolean(matched?.installed),
+          };
+        }),
         vae: vaePath ? {
           repo_id: vaeInfo?.repo_id || args.vae_repo || card.repo_id || "",
           path: vaePath,
           size_gb: Number(vaeInfo?.size_gb || 0),
           local: vaeLocal,
+          installed: Boolean(existingVae?.installed),
+          shared: Boolean(existingVae?.shared),
+          shared_from: existingVae?.shared_from || "",
         } : null,
         aux: auxFiles,
         repoInfo: null,
@@ -5011,7 +5022,7 @@ const App = {
         ? editor.te.map((te, idx) => `
             <div class="component-item">
               <div class="component-info">
-                <span class="component-name">${escapeHtml(te.name || te.path || t("models.card_editor.encoder_label"))} ${te.recommended ? `<span class="component-primary">${escapeHtml(t("models.card_editor.primary"))}</span>` : ""}</span>
+                <span class="component-name">${escapeHtml(te.name || te.path || t("models.card_editor.encoder_label"))} ${te.recommended ? `<span class="component-primary">${escapeHtml(t("models.card_editor.primary"))}</span>` : ""} ${te.installed ? `<span class="component-state installed">${ICON_CHECK} ${escapeHtml(t("models.component_on_disk"))}</span>` : `<span class="component-state missing">${ICON_DOWNLOAD} ${escapeHtml(t("models.card_editor.not_installed"))}</span>`}</span>
                 <span class="component-sub" title="${escapeHtml([te.repo_id, te.path, te.precision].filter(Boolean).join(" · "))}">${escapeHtml([te.repo_id, te.path, te.precision, te.size_gb ? `${te.size_gb} GB` : ""].filter(Boolean).join(" · "))}</span>
               </div>
               <div class="component-actions">
@@ -5026,7 +5037,7 @@ const App = {
       vaeList.innerHTML = editor.vae
         ? `<div class="component-item">
              <div class="component-info">
-               <span class="component-name">VAE</span>
+               <span class="component-name">VAE ${editor.vae.installed ? `<span class="component-state installed">${ICON_CHECK} ${escapeHtml(t("models.component_on_disk"))}${editor.vae.shared ? ` (${escapeHtml(editor.vae.shared_from || t("common.shared"))})` : ""}</span>` : `<span class="component-state missing">${ICON_DOWNLOAD} ${escapeHtml(t("models.card_editor.not_installed"))}</span>`}</span>
                <span class="component-sub" title="${escapeHtml([editor.vae.repo_id, editor.vae.path].filter(Boolean).join(" · "))}">${escapeHtml([editor.vae.repo_id, editor.vae.path].filter(Boolean).join(" · "))}</span>
              </div>
              <div class="component-actions">

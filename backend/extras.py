@@ -1123,6 +1123,17 @@ def _run_extras_job_cli(job_json_path: str) -> int:
         has_local_pipeline = ((model_dir / "model_index.json").exists()
                               or (model_dir / "modular_model_index.json").exists())
         base_source = str(model_dir) if has_local_pipeline else (payload.get("base_model_repo") or repo_id)
+        if not has_local_pipeline:
+            cache_dir = model_dir.parent
+            if cache_dir.is_dir():
+                for peer in cache_dir.iterdir():
+                    if peer.is_dir() and peer != model_dir:
+                        if (peer / "model_index.json").exists():
+                            peer_name = peer.name.lower()
+                            if ("klein" in family or "flux" in family) and ("flux" in peer_name or "klein" in peer_name):
+                                base_source = str(peer)
+                                print(f"[status] Using family shared base pipeline from '{peer.name}'", flush=True)
+                                break
         te_path_str = payload.get("text_encoder_path")
         te_path = Path(te_path_str) if te_path_str else None
 

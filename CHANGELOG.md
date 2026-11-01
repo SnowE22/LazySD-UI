@@ -10,7 +10,17 @@
 
 ## 2026-11-01
 
-### `HEAD` — fix(models): detect manually downloaded weights in subfolders and unblock Nunchaku generation
+### `HEAD` — fix(models): family-level shared VAE fallback and Card Editor disk status
+
+- **Семейный VAE fallback (`find_family_shared_vae`)**: FLUX-модели (`klein`, `flux`, `flux3`, `moss-image`) и Qwen-модели автоматически переиспользуют уже скачанные VAE того же семейства из кэша (например, `FLUX.2-klein-9B-Nunchaku` или `flux-3-image-klein-nunchaku`), исключая повторные загрузки одного и того же 16-канального VAE для каждой вариации модели.
+- **Статус в Model Hub**: секция VAE на карточках моделей теперь учитывает общесемейные VAE и отображает бейдж `✓ На диске (из <shared_model>)` без ложной кнопки `[Скачать]`; предупреждение `[нужно скачать]` отображается только если VAE действительно отсутствует везде на диске.
+- **Индикаторы наличия в Редакторе карточек**: компоненты VAE и текстовые энкодеры в Model Card Editor теперь отображают актуальный статус на диске (`✓ На диске` / `⬇ Не скачан`) и источник вместо сырого текстового пути.
+- **Офлайн fallback базового пайплайна в Nunchaku**: при отсутствии `model_index.json` в локальной директории модели `ExtrasWorker` задействует базовую конфигурацию пайплайна от родственной модели того же семейства, позволяя инференсу работать полностью локально без сетевых запросов к Hugging Face.
+- **Автотесты**: добавлены тесты разрешения семейных VAE и проверки UI-контрактов в `tests/test_model_files_and_hf_layout.py`.
+
+---
+
+### `868d33b` — fix(models): detect manually downloaded weights in subfolders and unblock Nunchaku generation
 
 - **Поддержка подпапок весов (`transformer/`, `vae/`, `text_encoder/`)**: добавлен метод `CacheManager.find_existing_file()`, который находит веса и компоненты как в корне кэша репозитория, так и в стандартных поддиректориях Hugging Face diffusers.
 - **Толерантность к размеру в `check_file()`**: файлы с девиацией размера (до 15% между десятичными GB в манифестах и бинарными GiB на диске, например 5.80 GB vs 6.22 GiB) больше не помечаются ошибочно как `corrupted`.

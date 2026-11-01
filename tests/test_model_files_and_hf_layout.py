@@ -467,3 +467,44 @@ def test_te_missing_guard_in_app_js():
     app_js = (ROOT / "frontend" / "js" / "app.js").read_text(encoding="utf-8")
     assert "const teMissing = teList.length > 0 && !teList.some(te => te.installed);" in app_js
     assert "const installedVar = variants.find(v => v.state === \"installed\" || v.installed);" in app_js
+
+
+def test_family_shared_vae_resolution(tmp_path):
+    from backend.cache import CacheManager
+    from backend.model_files import find_family_shared_vae, vae_payload_from_args
+
+    cache_dir = tmp_path / "cache"
+    cache = CacheManager(cache_dir=cache_dir)
+
+    # 1. Simulate that FLUX.2-klein-9B-Nunchaku has its VAE downloaded
+    vae_file = cache_dir / "FLUX.2-klein-9B-Nunchaku" / "vae" / "diffusion_pytorch_model.safetensors"
+    vae_file.parent.mkdir(parents=True, exist_ok=True)
+    vae_file.write_bytes(b"v" * (2 * 1024 * 1024))
+
+    # 2. Query shared VAE for klein family excluding FLUX.2-klein-4B-Nunchaku
+    shared = find_family_shared_vae("klein", cache, exclude_repo="tonera/FLUX.2-klein-4B-Nunchaku")
+    assert shared is not None
+    assert shared["installed"] is True
+    assert shared["shared"] is True
+    assert shared["shared_from"] == "FLUX.2-klein-9B-Nunchaku"
+    assert shared["path"] == "vae/diffusion_pytorch_model.safetensors"
+
+    # 3. Test vae_payload_from_args with family fallback
+    payload = vae_payload_from_args(
+        engine_args={"vae": "vae/diffusion_pytorch_model.safetensors"},
+        primary_repo="tonera/FLUX.2-klein-4B-Nunchaku",
+        cache=cache,
+        family="klein",
+    )
+    assert payload is not None
+    assert payload["installed"] is True
+    assert payload["shared"] is True
+    assert payload["shared_from"] == "FLUX.2-klein-9B-Nunchaku"
+
+
+def test_card_editor_and_hub_shared_vae_in_app_js():
+    from tests.test_model_files_and_hf_layout import ROOT
+    app_js = (ROOT / "frontend" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "const vaeMissing = vaeList.length > 0 && !vaeList.some(vae => vae.installed);" in app_js
+    assert 'vae.shared ? ` (${escapeHtml(vae.shared_from || t("common.shared"))})`' in app_js
+    assert "models.card_editor.not_installed" in app_js

@@ -1105,5 +1105,6 @@
   "inpaint.crop.no_selection": "No area selected",
   "inpaint.crop.error.no_box": "Select the generation area on the image first",
   "inpaint.crop.error.too_small": "The area is too small (minimum 64px per side)",
-  "inpaint.crop.error.not_covered": "The selection does not cover the whole mask - enlarge it"
+  "inpaint.crop.error.not_covered": "The selection does not cover the whole mask - enlarge it",
+  "models.card_editor.not_installed": "Not downloaded"
 }
