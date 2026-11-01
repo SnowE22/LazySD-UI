@@ -687,23 +687,53 @@ class ExtrasWorker:
         repo_dir = cache.repo_dir_for(primary_repo) if primary_repo else settings.models_dir
 
         # Resolve transformer weight file
-        tr_rel = model.engine_args.get("diffusion_model") if getattr(model, "engine_args", None) else None
         variant_id = getattr(request, "variant_id", None)
-        for t in getattr(model, "transformers", []):
-            if variant_id and t.id == variant_id:
-                tr_rel = t.path
-                break
-            if not tr_rel and t.recommended:
-                tr_rel = t.path
+        tr_rel = None
+        if variant_id:
+            for t in getattr(model, "transformers", []):
+                if t.id == variant_id:
+                    tr_rel = t.path
+                    break
+        if not tr_rel:
+            for t in getattr(model, "transformers", []):
+                found = cache.find_existing_file(getattr(t, "repo_id", None) or primary_repo, t.path)
+                if found and found.is_file():
+                    tr_rel = t.path
+                    variant_id = t.id
+                    break
+        if not tr_rel:
+            for t in getattr(model, "transformers", []):
+                if t.recommended:
+                    tr_rel = t.path
+                    break
+        if not tr_rel:
+            tr_rel = model.engine_args.get("diffusion_model") if getattr(model, "engine_args", None) else None
         if not tr_rel and getattr(model, "transformers", None):
             tr_rel = model.transformers[0].path
 
-        tr_path = (repo_dir / tr_rel) if tr_rel else repo_dir
-        if tr_rel and not tr_path.exists():
-            # Fallback: look for any svdq-*.safetensors in repo_dir for nunchaku
-            cands = list(repo_dir.glob("*.safetensors")) if repo_dir.exists() else []
-            if cands:
-                tr_path = cands[0]
+        tr_path = None
+        if tr_rel:
+            tr_path = cache.find_existing_file(primary_repo, tr_rel)
+            if not tr_path and repo_dir.exists():
+                cand = repo_dir / tr_rel
+                if cand.is_file():
+                    tr_path = cand
+                else:
+                    cand_name = Path(tr_rel).name
+                    for sub in ("transformer", "transformers", ""):
+                        c = (repo_dir / sub / cand_name) if sub else (repo_dir / cand_name)
+                        if c.is_file():
+                            tr_path = c
+                            break
+        if not tr_path or not tr_path.is_file():
+            if repo_dir.exists():
+                for pattern in ("transformer/*.safetensors", "transformers/*.safetensors", "*.safetensors", "**/*.safetensors"):
+                    cands = [p for p in repo_dir.glob(pattern) if p.is_file() and not p.name.endswith(".incomplete") and ".cache" not in p.parts and "vae" not in p.parts and "text_encoder" not in p.parts]
+                    if cands:
+                        tr_path = cands[0]
+                        break
+        if not tr_path:
+            tr_path = (repo_dir / tr_rel) if tr_rel else repo_dir
 
         ref_image_path = None
         if getattr(request, "init_image_path", None):
@@ -820,13 +850,14 @@ class ExtrasWorker:
             te_id = getattr(request, "text_encoder_id", None)
             te_spec = model.get_text_encoder(te_id) if hasattr(model, "get_text_encoder") else None
             if not te_spec and getattr(model, "text_encoders", None):
-                te_spec = next((t for t in model.text_encoders if t.get("recommended")), model.text_encoders[0])
+                installed_te = next((t for t in model.text_encoders if cache.find_existing_file((t.get("source") or {}).get("repo_id") or t.get("repo") or primary_repo, t.get("file") or t.get("path"))), None)
+                te_spec = installed_te or next((t for t in model.text_encoders if t.get("recommended")), model.text_encoders[0])
             if te_spec:
                 source = te_spec.get("source", {})
                 te_repo = source.get("repo_id") if isinstance(source, dict) else None
                 te_file = te_spec.get("file", "")
                 if te_repo and te_file:
-                    shared_p = cache.repo_dir_for(te_repo) / te_file
+                    shared_p = cache.find_existing_file(te_repo, te_file) or (cache.repo_dir_for(te_repo) / te_file)
                     if shared_p.exists():
                         te_path = str(shared_p)
                     else:

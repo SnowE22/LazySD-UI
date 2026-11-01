@@ -112,6 +112,32 @@ class CacheManager:
         """Get the local directory for a repo's files."""
         return self.cache_dir / _repo_dir_name(repo_id)
 
+    def find_existing_file(self, repo_id: str, file_path: str) -> Optional[Path]:
+        """Find an existing file in the repo dir, checking canonical path and subdirectories."""
+        if not repo_id or not file_path:
+            return None
+        repo_dir = self.repo_dir_for(repo_id)
+        if not repo_dir.exists():
+            return None
+        canonical = repo_dir / file_path
+        if canonical.is_file():
+            return canonical
+        name = Path(file_path).name
+        # Direct common subfolder checks (fastest)
+        for sub in ("transformer", "transformers", "text_encoder", "text_encoders", "vae", "tokenizer", "scheduler", ""):
+            cand = (repo_dir / sub / name) if sub else (repo_dir / name)
+            if cand.is_file():
+                return cand
+        # Fallback: search repo_dir (ignoring .cache and .incomplete)
+        try:
+            for cand in repo_dir.rglob(name):
+                if cand.is_file() and not cand.name.endswith(".incomplete") and ".cache" not in cand.parts:
+                    return cand
+        except Exception:
+            pass
+        return None
+
+
     # ---------- State inspection ----------
     def check_file(
         self,
@@ -127,7 +153,8 @@ class CacheManager:
             compute_checksum: If True and file exists, compute SHA-256 to verify.
                              Set False for fast existence check only.
         """
-        local_path = self.path_for(repo_id, file_path)
+        existing = self.find_existing_file(repo_id, file_path)
+        local_path = existing or self.path_for(repo_id, file_path)
         incomplete_path = local_path.with_suffix(local_path.suffix + ".incomplete")
 
         # Case 1: File doesn't exist
@@ -151,16 +178,21 @@ class CacheManager:
         actual_size = local_path.stat().st_size
         actual_sha256 = None
 
-        # Case 2: Size mismatch (fast check, no hashing)
-        if expected_size > 0 and actual_size != expected_size:
-            return CacheEntry(
-                path=local_path,
-                expected_size=expected_size,
-                expected_sha256=expected_sha256,
-                state=FileState.CORRUPTED,
-                actual_size=actual_size,
-                actual_sha256=None,
-            )
+        # Case 2: Size validation
+        # Manifests often estimate size_bytes via decimal GB (up to 7.4% difference from binary GiB)
+        # or upstream quant weights vary slightly.
+        if expected_size > 0:
+            is_suspiciously_small = actual_size < 1024 and expected_size > 1024 * 1024
+            divergence = abs(actual_size - expected_size) / expected_size
+            if is_suspiciously_small or (divergence > 0.15 and not expected_sha256):
+                return CacheEntry(
+                    path=local_path,
+                    expected_size=expected_size,
+                    expected_sha256=expected_sha256,
+                    state=FileState.CORRUPTED,
+                    actual_size=actual_size,
+                    actual_sha256=None,
+                )
 
         # Case 3: Size OK, no expected sha256 → assume installed
         if not expected_sha256 or not compute_checksum:
@@ -216,7 +248,7 @@ class CacheManager:
     # ---------- Mutations ----------
     def delete_file(self, repo_id: str, file_path: str) -> bool:
         """Delete a file from cache (e.g. corrupted)."""
-        local_path = self.path_for(repo_id, file_path)
+        local_path = self.find_existing_file(repo_id, file_path) or self.path_for(repo_id, file_path)
         if local_path.exists():
             local_path.unlink()
             return True
