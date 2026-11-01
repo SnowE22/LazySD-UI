@@ -9,9 +9,10 @@
 > система слоёв Halftone). Актуальный журнал коммитов — [`CHANGELOG.md`](CHANGELOG.md),
 > архитектура — [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md).
 >
-> Последние коммиты: `2e1b352` (fix LoRA Hub), `9ece51d` (Halftone layers/FBO),
-> `dcc5891` (presets/Nunchaku/HF token). Перед планированием сверяйся с
-> `git log --oneline -20`.
+> Последние коммиты: `07d074a` (Inpaint crop modes: auto/params/manual),
+> `00d4702` (Inpaint bbox crop + Qwen), `9acb452` (FLUX inpaint masks Nunchaku/OrbitQuant/SD.CPP),
+> `507dd90` (New Dock: Ref/ControlNet/LoRA), `73ffbfd` (Fast HF downloads + mirror).
+> Полный журнал: [`CHANGELOG.md`](CHANGELOG.md). Перед планированием сверяйся с `git log --oneline -20`.
 
 ---
 
