@@ -146,6 +146,28 @@ class ModelSpec:
     local_folder: str = ""                 # Host-named folder inside models/cache
     base_repo_id: str = ""                 # Repo that supplies encoder/VAE/config (diffusers layout)
     download_patterns: list[str] = field(default_factory=list)  # Snapshot patterns for the base task
+    target_architecture: Optional[str] = None  # Exact base model weights (e.g. 'flux_2_klein_9b', 'flux_2_klein_4b', 'flux_3_image_klein', 'qwen_image_2_1')
+
+    def get_target_architecture(self) -> str:
+        if self.target_architecture:
+            return self.target_architecture
+        mid = (self.id or "").lower()
+        fam = (self.family or "").lower()
+        if "flux_3" in mid or "flux3" in mid or fam == "flux3":
+            return "flux_3_image_klein"
+        if ("klein" in fam or "flux" in fam) and ("9b" in mid or "9b" in fam):
+            return "flux_2_klein_9b"
+        if ("klein" in fam or "flux" in fam) and ("4b" in mid or "4b" in fam):
+            return "flux_2_klein_4b"
+        if "qwen" in fam or "qwen" in mid:
+            return "qwen_image_2_1"
+        if "z_image" in mid or "z-image" in fam:
+            return "z_image_turbo"
+        if "sdxl" in fam or "sdxl" in mid:
+            return "sdxl"
+        if "flux_schnell" in mid or "flux_dev" in mid or "flux_1" in mid:
+            return "flux_1"
+        return fam or "unknown" 
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelSpec":
@@ -206,6 +228,7 @@ class ModelSpec:
             local_folder=local_folder,
             base_repo_id=str(data.get("base_repo_id") or "").strip(),
             download_patterns=list(data.get("download_patterns") or []),
+            target_architecture=data.get("target_architecture"),
         )
 
     # ---------- Helpers ----------

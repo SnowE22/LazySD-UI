@@ -147,7 +147,7 @@ def _coerce_float(value, default=None):
 
 
 LORA_META_EDITABLE = {
-    "label", "trigger", "family", "architecture", "base", "repo_id",
+    "label", "trigger", "family", "architecture", "target_architecture", "base", "repo_id",
     "compatible_models", "engine", "target_modules", "rank", "scale_default",
 }
 
@@ -169,8 +169,8 @@ def update_lora_metadata(name: str, updates: dict) -> dict:
         value = updates.get(key)
         if key in ("compatible_models", "engine", "target_modules"):
             cleaned[key] = _as_string_list(value, limit=32 if key == "compatible_models" else 8)
-        elif key in ("family", "architecture"):
-            cleaned[key] = normalize_model_family(value) if value is not None else ""
+        elif key in ("family", "architecture", "target_architecture"):
+            cleaned[key] = str(value or "").strip()[:40] if key == "target_architecture" else (normalize_model_family(value) if value is not None else "")
         elif key == "scale_default":
             number = _coerce_float(value)
             cleaned[key] = None if number is None else max(MIN_STRENGTH, min(MAX_STRENGTH, number))
@@ -190,6 +190,7 @@ def detect_lora_info(path: Path) -> dict:
     info: dict = {
         "family": None,
         "architecture": None,
+        "target_architecture": None,
         "rank": None,
         "trigger": None,
         "base": None,
@@ -263,6 +264,28 @@ def detect_lora_info(path: Path) -> dict:
     if info["architecture"] is None and info["family"]:
         # A detected family doubles as the architecture until the host overrides it.
         info["architecture"] = info["family"]
+
+    if meta_overrides.get("target_architecture"):
+        info["target_architecture"] = str(meta_overrides["target_architecture"]).strip()[:40] or None
+
+    # Automatic inference if not explicitly specified
+    if not info.get("target_architecture"):
+        text_hints = f"{info.get('base') or ''} {path.stem} {info.get('architecture') or ''}".lower()
+        if "klein_9b" in text_hints or "klein-9b" in text_hints or ("klein" in text_hints and "9b" in text_hints):
+            info["target_architecture"] = "flux_2_klein_9b"
+        elif "klein_4b" in text_hints or "klein-4b" in text_hints or ("klein" in text_hints and "4b" in text_hints):
+            info["target_architecture"] = "flux_2_klein_4b"
+        elif "flux_3" in text_hints or "flux3" in text_hints:
+            info["target_architecture"] = "flux_3_image_klein"
+        elif "qwen" in text_hints or info.get("family") == "qwen":
+            info["target_architecture"] = "qwen_image_2_1"
+        elif "z_image" in text_hints or "z-image" in text_hints or info.get("family") == "z_image":
+            info["target_architecture"] = "z_image_turbo"
+        elif "sdxl" in text_hints or "pony" in text_hints or "illustrious" in text_hints or info.get("family") == "sdxl":
+            info["target_architecture"] = "sdxl"
+        elif "flux" in text_hints or info.get("family") == "flux":
+            if "schnell" in text_hints or "dev" in text_hints or "flux1" in text_hints:
+                info["target_architecture"] = "flux_1"
 
     return info
 
@@ -689,6 +712,7 @@ def _compat_result(
     model_id: str,
     lora_family: Optional[str] = None,
     architecture: Optional[str] = None,
+    target_architecture: Optional[str] = None,
     bound_models: Optional[list[str]] = None,
     bound_engines: Optional[list[str]] = None,
     compatible: bool,
@@ -701,6 +725,7 @@ def _compat_result(
         "supported_by_engine": supported_by_engine,
         "lora_family": lora_family,
         "architecture": architecture,
+        "target_architecture": target_architecture,
         "model_family": model_family,
         "model_id": model_id,
         "engine": engine,
@@ -761,12 +786,20 @@ def check_lora_compatibility(lora_name: Optional[str], model_spec) -> dict:
     bound_models = _as_string_list(info.get("compatible_models"))
     bound_engines = [item.lower() for item in _as_string_list(info.get("engine"), limit=8)]
 
+    model_target_arch = (
+        model_spec.get_target_architecture()
+        if hasattr(model_spec, "get_target_architecture")
+        else getattr(model_spec, "target_architecture", None)
+    )
+    lora_target_arch = info.get("target_architecture")
+
     common = {
         "engine": engine,
         "model_family": model_fam,
         "model_id": model_id,
         "lora_family": lora_fam,
         "architecture": explicit_arch,
+        "target_architecture": lora_target_arch or model_target_arch,
         "bound_models": bound_models,
         "bound_engines": bound_engines,
     }
@@ -801,7 +834,28 @@ def check_lora_compatibility(lora_name: Optional[str], model_spec) -> dict:
             ),
         )
 
-    # 3. Architecture family fallback (legacy behaviour).
+    # 3. Target architecture matching (exact base transformer weights / dimensions).
+    # e.g., LoRA for "flux_2_klein_9b" must NOT load on "flux_2_klein_4b" or "flux_3_image_klein".
+    if lora_target_arch and model_target_arch and lora_target_arch not in ("any", "", "unknown"):
+        if lora_target_arch == model_target_arch:
+            return _compat_result(
+                **common,
+                compatible=True,
+                match_level="target_architecture",
+                reason=f"100% совместимо: точное совпадение архитектуры весов «{model_target_arch}» (движок {engine.upper()}).",
+            )
+        else:
+            return _compat_result(
+                **common,
+                compatible=False,
+                reason=(
+                    f"Несовместимая архитектура весов: LoRA обучена для «{lora_target_arch}», "
+                    f"а выбранная модель имеет архитектуру «{model_target_arch}». "
+                    "Применение приведет к сбою генерации."
+                ),
+            )
+
+    # 4. Architecture family fallback (legacy behaviour).
     if explicit_arch not in ("any", "") and model_fam not in ("any", "") and explicit_arch != model_fam:
         return _compat_result(
             **common,

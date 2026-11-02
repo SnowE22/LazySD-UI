@@ -5950,7 +5950,7 @@ const App = {
     if (compat.compatible === false) {
       return `<span class="lora-compat-badge incompatible" title="${escapeHtml(compat.reason || "")}">несовместима</span>`;
     }
-    const labels = { exact: "точная", architecture: "архитектура", family: "семейство", engine: "движок" };
+    const labels = { exact: "точная", target_architecture: "100% архитектура", architecture: "архитектура", family: "семейство", engine: "движок" };
     const label = labels[compat.match_level] || "совместима";
     return `<span class="lora-compat-badge compatible" title="${escapeHtml(compat.reason || "")}">${escapeHtml(label)}</span>`;
   },
@@ -6347,12 +6347,15 @@ const App = {
     if (nameEl) nameEl.value = name;
     const archSelect = document.getElementById("lora-binding-architecture");
     if (archSelect) {
-      const architecture = String(item.architecture || item.family || "any").toLowerCase();
+      const architecture = String(item.target_architecture || item.architecture || item.family || "any").toLowerCase();
       archSelect.innerHTML = `
-        <option value="flux">Flux / FLUX.2 Klein</option>
-        <option value="qwen">Qwen-Image</option>
-        <option value="sdxl">SDXL / Pony / Illustrious</option>
-        <option value="z_image">Z-Image</option>
+        <option value="flux_2_klein_9b">⚡ Flux.2 Klein 9B (все движки: Nunchaku / OrbitQuant / GGUF)</option>
+        <option value="flux_2_klein_4b">⚡ Flux.2 Klein 4B (Nunchaku / OrbitQuant)</option>
+        <option value="flux_3_image_klein">⚡ FLUX.3 Image Klein</option>
+        <option value="flux_1">⚡ FLUX.1 (Dev / Schnell)</option>
+        <option value="qwen_image_2_1">⚡ Qwen-Image 2.1 (все движки)</option>
+        <option value="z_image_turbo">⚡ Z-Image Turbo</option>
+        <option value="sdxl">⚡ SDXL / Pony / Illustrious</option>
         <option value="any">Любая / универсальная</option>`;
       if (!Array.from(archSelect.options).some(option => option.value === architecture) && architecture) {
         archSelect.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(architecture)}">${escapeHtml(architecture)}</option>`);
@@ -6436,6 +6439,7 @@ const App = {
     const scaleRaw = value("lora-binding-scale").trim();
     const payload = {
       architecture: architecture === "any" ? "" : architecture,
+      target_architecture: architecture === "any" ? "" : architecture,
       trigger: value("lora-binding-trigger").trim(),
       target_modules: value("lora-binding-targets").trim(),
       scale_default: scaleRaw === "" ? null : parseFloat(scaleRaw),
