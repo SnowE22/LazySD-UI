@@ -1491,6 +1491,7 @@ const App = {
         : selectedProv === "gguf"
           ? Boolean(vm.installed_local)
           : Boolean(vm.installed_ollama);
+      const canImportLocal = selectedProv === "ollama" && Boolean(vm.installed_local) && !vm.installed_ollama;
       const anyInstalled = Boolean(vm.installed);
 
       const statusBadge = isInstalledForProv
@@ -1528,7 +1529,9 @@ const App = {
       const dlButtonText = isDownloading
         ? `Скачивание (${Math.round(vm.progress || 0)}%)`
         : selectedProv === "ollama"
-          ? `Скачать в Ollama${sizeText ? ` (${sizeText})` : ""}`
+          ? canImportLocal
+            ? "Импортировать в Ollama"
+            : `Скачать в Ollama${sizeText ? ` (${sizeText})` : ""}`
           : selectedProv === "gguf"
             ? `Скачать GGUF в кэш${sizeText ? ` (${sizeText})` : ""}`
             : `Скачать веса SVDQ${sizeText ? ` (${sizeText})` : ""}`;
@@ -1595,6 +1598,11 @@ const App = {
     if (!modelId) return;
     const vm = (this.state.visionModels || []).find(m => m.id === modelId);
     const chosenProvider = provider || (vm ? this.getVisionCardProvider(vm) : null);
+    // Already in the HF cache but not registered in Ollama: import locally
+    // instead of downloading another copy.
+    if ((!chosenProvider || chosenProvider === "ollama") && vm?.installed_local && !vm?.installed_ollama) {
+      return this.importVisionModelFromHub(modelId, btnEl);
+    }
     if (btnEl) {
       btnEl.disabled = true;
       btnEl.classList.add("is-loading");
@@ -1616,6 +1624,34 @@ const App = {
       }
     } catch (err) {
       this.toast("error", "Ошибка скачивания: " + (err.message || err));
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.classList.remove("is-loading");
+      }
+    }
+  },
+
+  async importVisionModelFromHub(modelId, btnEl) {
+    if (!modelId) return;
+    const vm = (this.state.visionModels || []).find(m => m.id === modelId);
+    const label = vm?.name || modelId;
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.classList.add("is-loading");
+    }
+    try {
+      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/import`, {});
+      this.toast("info", `Импорт «${label}» в Ollama запущен...`);
+      if (res?.job_id && this.startDownloadPolling) {
+        this.startDownloadPolling(res.job_id, {
+          label: `VLM: ${label}`,
+          kind: "vision",
+          modelId,
+          repoId: vm?.repo_id || modelId,
+        });
+      }
+    } catch (err) {
+      this.toast("error", "Ошибка импорта в Ollama: " + (err.message || err));
       if (btnEl) {
         btnEl.disabled = false;
         btnEl.classList.remove("is-loading");
@@ -14365,7 +14401,13 @@ Object.assign(App, {
     const installedForProv = this.inpaintVisionModelInstalled(entry, activeProv);
     const canDownload = Boolean(entry && !installedForProv && entry.status !== "downloading" && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
     const canDelete = Boolean(entry && entry.installed && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
-    if (dlBtn) dlBtn.style.display = canDownload ? "inline-flex" : "none";
+    const canImport = Boolean(entry && entry.installed_local && !entry.installed_ollama && (activeProv === "auto" || activeProv === "ollama"));
+    if (dlBtn) {
+      dlBtn.style.display = canDownload ? "inline-flex" : "none";
+      dlBtn.title = canImport
+        ? "Импортировать локальный GGUF в Ollama без повторного скачивания"
+        : "Скачать выбранные веса через менеджер загрузок Хаба";
+    }
     if (delBtn) delBtn.style.display = canDelete ? "inline-flex" : "none";
   },
 
@@ -14382,13 +14424,19 @@ Object.assign(App, {
         badge.textContent = "⏳ 0%";
       }
       const provSelect = document.getElementById("inpaint-vision-provider-select");
-      const chosenProv = (provSelect?.value && provSelect.value !== "auto" && provSelect.value !== "heuristic")
-        ? provSelect.value
+      const activeProv = provSelect?.value || "auto";
+      const chosenProv = (activeProv !== "auto" && activeProv !== "heuristic")
+        ? activeProv
         : null;
-      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {
-        provider: chosenProv,
-      });
       const entry = (state.visionModels || []).find((m) => m.id === modelId);
+      const needsImport = Boolean(
+        entry && entry.installed_local && !entry.installed_ollama
+        && (activeProv === "auto" || activeProv === "ollama")
+      );
+      const endpoint = needsImport ? "import" : "download";
+      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/${endpoint}`,
+        needsImport ? {} : { provider: chosenProv },
+      );
       if (res?.job_id && this.startDownloadPolling) {
         this.startDownloadPolling(res.job_id, {
           label: `VLM/PUP: ${entry?.name || modelId}`,
@@ -14397,7 +14445,12 @@ Object.assign(App, {
           repoId: entry?.repo_id || modelId,
         });
       }
-      this.toast("info", `Загрузка ${entry?.name || modelId} запущена (см. Хаб → Загрузки)...`);
+      this.toast(
+        "info",
+        needsImport
+          ? `Импорт ${entry?.name || modelId} в Ollama запущен...`
+          : `Загрузка ${entry?.name || modelId} запущена (см. Хаб → Загрузки)...`
+      );
       for (let i = 0; i < 300; i += 1) {
         await new Promise((r) => setTimeout(r, 1500));
         const data = await this.apiGet("/api/vision/models");

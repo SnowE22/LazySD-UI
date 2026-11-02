@@ -948,6 +948,174 @@ def _download_hf_vision_model(
     _notify_progress(progress_callback, 100.0, "Installed ✓", status="complete")
 
 
+def import_local_vision_model_to_ollama(
+    model_id: str,
+    ollama_url: str = "http://127.0.0.1:11434",
+    models_dir: Optional[Path] = None,
+    progress_callback: Optional[Callable[..., None]] = None,
+    job_id: Optional[str] = None,
+    timeout_sec: float = 600.0,
+) -> Dict[str, Any]:
+    """Create an Ollama model from already-downloaded GGUF + mmproj files.
+
+    This avoids re-downloading Gemma/Qwen weights that the Hub already stored in
+    ``models/cache/<local_dir>``.  Ollama copies the layers into its own blob
+    store, but no network transfer is involved.
+    """
+    entry = get_catalog_entry(model_id)
+    if not entry:
+        raise VisionRuntimeError(f"Unknown vision model: {model_id}", status_code=404)
+    primary_file = str(entry.get("primary_file") or "").strip()
+    mmproj_file = str(entry.get("mmproj_file") or "").strip()
+    local_dir = str(entry.get("local_dir") or "").strip()
+    if not primary_file or not mmproj_file or not local_dir:
+        raise VisionRuntimeError(
+            f"Model '{model_id}' does not declare GGUF + mmproj files.",
+            status_code=400,
+        )
+
+    base_dir = (Path(models_dir) if models_dir else (Path(__file__).resolve().parent.parent / "models" / "cache")).resolve()
+    model_dir = base_dir / local_dir
+    primary_path = model_dir / primary_file
+    mmproj_path = model_dir / mmproj_file
+    if not primary_path.is_file() or primary_path.stat().st_size < 1024:
+        raise VisionRuntimeError(
+            f"Local GGUF not found: {primary_path}. Download the model first.",
+            status_code=409,
+        )
+    if not mmproj_path.is_file() or mmproj_path.stat().st_size < 1024:
+        raise VisionRuntimeError(
+            f"Local vision projector (mmproj) not found: {mmproj_path}.",
+            status_code=409,
+        )
+
+    from .ollama_engine import find_ollama_binary
+    ollama_exe = find_ollama_binary()
+    if not ollama_exe:
+        raise VisionRuntimeError(
+            "Ollama binary not found. Install Ollama or start it first.",
+            status_code=503,
+        )
+
+    tag = entry["id"]
+    detail = f"Importing local GGUF into Ollama as '{tag}'..."
+    set_download_state(
+        model_id,
+        status="downloading",
+        job_id=job_id,
+        progress=5.0,
+        detail=detail,
+    )
+    _notify_progress(progress_callback, 5.0, detail, status="downloading")
+
+    # Point the CLI at the same daemon the app uses.
+    parsed = urllib.parse.urlparse(validate_ollama_url(ollama_url))
+    env = os.environ.copy()
+    if parsed.hostname:
+        env["OLLAMA_HOST"] = f"{parsed.hostname}:{parsed.port or 11434}"
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="lazysd_ollama_import_") as tmp:
+            modelfile = Path(tmp) / "Modelfile"
+            # Two FROM lines: base LLM weights + vision projector (mmproj).
+            modelfile.write_text(
+                f'FROM "{primary_path.as_posix()}"\nFROM "{mmproj_path.as_posix()}"\n',
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [str(ollama_exe), "create", tag, "-f", str(modelfile)],
+                capture_output=True,
+                text=True,
+                timeout=max(30.0, float(timeout_sec)),
+                env=env,
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise VisionRuntimeError(
+            f"Ollama import timed out after {timeout_sec}s.",
+            status_code=504,
+        ) from exc
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()[-500:]
+        raise VisionRuntimeError(
+            f"Ollama import failed: {err or 'unknown error'}",
+            status_code=500,
+        )
+
+    st = check_ollama_status(ollama_url)
+    if not is_tag_matching(tag, st.get("installed_tags") or []):
+        raise VisionRuntimeError(
+            f"Ollama import finished but '{tag}' is missing from /api/tags.",
+            status_code=500,
+        )
+
+    set_download_state(
+        model_id,
+        status="installed",
+        job_id=job_id,
+        progress=100.0,
+        detail="Imported into Ollama",
+    )
+    _notify_progress(progress_callback, 100.0, "Imported into Ollama ✓", status="complete")
+    return {"model": tag, "status": "installed"}
+
+
+def start_vision_model_import(
+    ollama_url: str,
+    model_id: str,
+    progress_callback: Optional[Callable[..., None]] = None,
+    models_dir: Optional[Path] = None,
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Start an asynchronous local-GGUF -> Ollama import job."""
+    entry = get_catalog_entry(model_id)
+    if not entry:
+        raise VisionRuntimeError(f"Unknown vision model: {model_id}", status_code=404)
+    existing = get_download_state(entry["id"])
+    if existing and existing.get("status") == "downloading":
+        return existing
+
+    state = set_download_state(
+        entry["id"],
+        status="downloading",
+        job_id=job_id,
+        progress=0.0,
+        detail="Preparing Ollama import...",
+    )
+    job_id = state["job_id"]
+
+    def _worker() -> None:
+        try:
+            import_local_vision_model_to_ollama(
+                entry["id"],
+                ollama_url=ollama_url,
+                models_dir=models_dir,
+                progress_callback=progress_callback,
+                job_id=job_id,
+            )
+        except Exception as exc:
+            logger.warning("[vision] Ollama import failed for %s: %s", entry["id"], exc)
+            set_download_state(
+                entry["id"],
+                status="error",
+                job_id=job_id,
+                progress=0.0,
+                detail="Import failed",
+                error=str(exc),
+            )
+            _notify_progress(
+                progress_callback,
+                0.0,
+                f"Import failed: {exc}",
+                status="error",
+                error=str(exc),
+            )
+
+    thread = threading.Thread(target=_worker, name=f"vision-import-{entry['id']}", daemon=True)
+    thread.start()
+    return state
+
+
 def start_vision_model_download(
     ollama_url: str,
     model_id: str,

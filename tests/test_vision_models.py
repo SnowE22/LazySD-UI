@@ -10,7 +10,9 @@ from backend.vision_models import (
     set_download_state,
 )
 from backend.vision_runtime import (
+    VisionRuntimeError,
     check_ollama_status,
+    import_local_vision_model_to_ollama,
     pick_vision_tag,
     tag_supports_vision,
 )
@@ -78,6 +80,15 @@ def test_text_only_models_are_not_treated_as_vision(monkeypatch):
     status = check_ollama_status("http://127.0.0.1:11434")
     assert status["vision_tags"] == ["gemma3:4b"]
     assert pick_vision_tag(status["installed_tags"], status["vision_tags"]) == "gemma3:4b"
+
+
+def test_import_requires_local_gguf_and_mmproj(tmp_path):
+    try:
+        import_local_vision_model_to_ollama("gemma3:4b", models_dir=tmp_path)
+    except VisionRuntimeError as exc:
+        assert "not found" in str(exc).lower()
+    else:
+        raise AssertionError("import should fail when local files are missing")
 
 
 def test_download_state_transitions():

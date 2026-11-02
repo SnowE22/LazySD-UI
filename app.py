@@ -14332,6 +14332,75 @@ def create_app() -> FastAPI:
         )
         return dl_state
 
+    @app.post("/api/vision/models/{model_id:path}/import")
+    async def api_vision_model_import(model_id: str, body: Optional[dict] = None, request: Request = None):
+        """Import already-downloaded GGUF + mmproj into Ollama without re-downloading."""
+        if request:
+            from backend.accounts import resolve_account_from_scope
+            caller = request.scope.get("state", {}).get("account") or resolve_account_from_scope(request.scope)
+            if caller.get("is_guest", False):
+                raise HTTPException(403, "Импорт моделей доступен только хосту.")
+        from backend.vision_models import get_catalog_entry, get_download_state
+        from backend.vision_runtime import check_ollama_status, start_vision_model_import
+
+        entry = get_catalog_entry(model_id)
+        if not entry:
+            raise HTTPException(404, f"Unknown vision model: {model_id}")
+        existing = get_download_state(entry["id"])
+        if existing and existing.get("status") == "downloading":
+            return existing
+
+        settings = get_settings()
+        ollama_url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
+        st = await asyncio.to_thread(check_ollama_status, ollama_url)
+        if not st["ollama_available"]:
+            raise HTTPException(503, f"Ollama is not reachable at {ollama_url}. Start Ollama first.")
+
+        job_id = f"vision-import-{uuid.uuid4().hex[:10]}"
+        STATE.register_job(job_id, kind="download", shared=True)
+        STATE.update_job(job_id, ProgressEvent(
+            status=JobStatus.DOWNLOADING,
+            progress=0.0,
+            message=f"Importing {entry['name']} into Ollama...",
+        ))
+
+        def _on_import_progress(
+            pct: float,
+            detail: str,
+            downloaded_bytes: Optional[int] = None,
+            total_bytes: Optional[int] = None,
+            speed_bps: Optional[float] = None,
+            status: str = "downloading",
+            error: Optional[str] = None,
+        ) -> None:
+            if status == "complete":
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.COMPLETE,
+                    progress=1.0,
+                    message=f"{entry['name']} imported into Ollama ✓",
+                ))
+            elif status == "error":
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.ERROR,
+                    progress=0.0,
+                    message=detail or "Ollama import failed",
+                    error=error or detail,
+                ))
+            else:
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.DOWNLOADING,
+                    progress=max(0.0, min(1.0, float(pct or 0.0) / 100.0)),
+                    message=detail or f"Importing {entry['name']} into Ollama...",
+                ))
+
+        return start_vision_model_import(
+            ollama_url,
+            entry["id"],
+            progress_callback=_on_import_progress,
+            models_dir=settings.models_dir,
+            job_id=job_id,
+        )
+
     @app.delete("/api/vision/models/{model_id:path}")
     async def api_vision_model_delete(model_id: str, confirm: bool = False, request: Request = None):
         if request:
