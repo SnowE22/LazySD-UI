@@ -14200,7 +14200,11 @@ Object.assign(App, {
 
     let savedModel = "";
     try { savedModel = localStorage.getItem("lazysd_inpaint_vision_model") || ""; } catch (_) {}
-    const prevValue = select.value || savedModel || this.state?.settings?.vision_model || "qwen2.5vl:3b";
+    // The <select> only holds the placeholder "heuristic" option on first render, so it must not
+    // override the saved choice / auto-pick of an installed model.
+    const prevValue = state._visionRendered
+      ? (select.value || savedModel)
+      : (savedModel || this.state?.settings?.vision_model || "");
 
     select.innerHTML = "";
     const models = Array.isArray(state.visionModels) ? state.visionModels : [];
@@ -14220,13 +14224,16 @@ Object.assign(App, {
       : this.maskT("inpaint.assistant.ollama_offline", "Ollama не запущена (эвристика)");
     select.appendChild(heurOpt);
 
-    if ([...select.options].some((o) => o.value === prevValue)) {
+    const prevEntry = models.find((m) => m.id === prevValue);
+    const prevUsable = prevValue === "heuristic" || (prevEntry && prevEntry.installed);
+    if (prevValue && [...select.options].some((o) => o.value === prevValue) && (prevUsable || state._visionRendered)) {
       select.value = prevValue;
     } else {
       const installed = models.find((m) => m.installed);
       const recommended = models.find((m) => m.recommended);
       select.value = (installed || recommended)?.id || "heuristic";
     }
+    state._visionRendered = true;
     this.onInpaintVisionModelChange();
   },
 
