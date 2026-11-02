@@ -5546,6 +5546,12 @@
 
             </button>
 
+            <button type="button" class="history-action-btn" style="height: 36px; padding: 0 14px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px;" onclick="App.openHubCatalogModal()">
+
+              <span>🌐</span> <span>Каталог LazySD-Models</span>
+
+            </button>
+
           </div>
 
           <div class="model-picker-filters" id="model-picker-filters">
@@ -6264,6 +6270,56 @@
 
     </div>
 
+  </div>
+
+  <!-- Modal: LazySD-Models Cloud Catalog Hub -->
+  <div id="hub-catalog-modal" class="modal-overlay" style="display: none; z-index: 10005;" onclick="if(event.target===this) App.closeHubCatalogModal()">
+    <div class="modal-content" style="max-width: 960px; padding: 22px; max-height: 90vh; display: flex; flex-direction: column;">
+      <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 12px;">
+        <div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 22px;">🌐</span>
+            <h3 style="margin: 0; font-size: 19px;">Каталог моделей LazySD-Models</h3>
+            <span class="lora-compat-badge" id="hub-catalog-count-badge" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa;">0 моделей</span>
+          </div>
+          <p style="margin: 4px 0 0; font-size: 12px; color: var(--text-dim);">
+            Проверенные карточки моделей с точной привязкой весов (<a href="https://github.com/nnmgrp/LazySD-Models" target="_blank" style="color: var(--accent); text-decoration: underline;">github.com/nnmgrp/LazySD-Models</a>). Установка карточки в 1 клик.
+          </p>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button type="button" class="history-action-btn" style="height: 32px; padding: 0 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;" onclick="App.refreshHubCatalog()">
+            <span>🔄</span> <span>Обновить</span>
+          </button>
+          <button class="modal-close" style="position: static;" onclick="App.closeHubCatalogModal()">✕</button>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;">
+        <input type="text" id="hub-catalog-search" class="model-picker-search-input" style="flex: 1; min-width: 220px;" placeholder="Поиск по названию, тегам или описанию..." oninput="App.onHubCatalogSearch(this.value)">
+        <div class="model-picker-filters" id="hub-catalog-arch-filters" style="margin-bottom: 0;">
+          <button class="filter-chip active" data-arch="all" onclick="App.setHubArchFilter('all', this)">Все архитектуры</button>
+          <button class="filter-chip" data-arch="flux_2_klein_9b" onclick="App.setHubArchFilter('flux_2_klein_9b', this)">Flux.2 Klein 9B</button>
+          <button class="filter-chip" data-arch="flux_2_klein_4b" onclick="App.setHubArchFilter('flux_2_klein_4b', this)">Flux.2 Klein 4B</button>
+          <button class="filter-chip" data-arch="flux_3_image_klein" onclick="App.setHubArchFilter('flux_3_image_klein', this)">FLUX.3</button>
+          <button class="filter-chip" data-arch="qwen_image_2_1" onclick="App.setHubArchFilter('qwen_image_2_1', this)">Qwen 2.1</button>
+          <button class="filter-chip" data-arch="z_image_turbo" onclick="App.setHubArchFilter('z_image_turbo', this)">Z-Image</button>
+          <button class="filter-chip" data-arch="sdxl" onclick="App.setHubArchFilter('sdxl', this)">SDXL</button>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 8px; margin-bottom: 14px; align-items: center; font-size: 11px; color: var(--text-dim); flex-wrap: wrap;">
+        <span>Движок:</span>
+        <button class="filter-chip active" data-engine="all" style="font-size: 11px; padding: 2px 8px;" onclick="App.setHubEngineFilter('all', this)">Все</button>
+        <button class="filter-chip" data-engine="nunchaku" style="font-size: 11px; padding: 2px 8px;" onclick="App.setHubEngineFilter('nunchaku', this)">Nunchaku (SVDQ)</button>
+        <button class="filter-chip" data-engine="orbitquant" style="font-size: 11px; padding: 2px 8px;" onclick="App.setHubEngineFilter('orbitquant', this)">OrbitQuant</button>
+        <button class="filter-chip" data-engine="sd_cpp" style="font-size: 11px; padding: 2px 8px;" onclick="App.setHubEngineFilter('sd_cpp', this)">SD.CPP (GGUF)</button>
+        <button class="filter-chip" data-engine="sdnq" style="font-size: 11px; padding: 2px 8px;" onclick="App.setHubEngineFilter('sdnq', this)">SDNQ</button>
+      </div>
+
+      <div id="hub-catalog-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; overflow-y: auto; flex: 1; padding-right: 4px;">
+        <div class="placeholder-text" style="grid-column: 1 / -1; padding: 40px; text-align: center;">Загрузка каталога моделей...</div>
+      </div>
+    </div>
   </div>
 
   <!-- Modal: Save / Edit Template / Preset -->

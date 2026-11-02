@@ -105,6 +105,7 @@ class Settings(BaseModel):
     # Optional HF mirror base URL (e.g. https://hf-mirror.com). Empty = official.
     # NOTE: the HF token is sent to this host too.
     hf_endpoint: Optional[str] = None
+    model_hub_url: str = "https://raw.githubusercontent.com/nnmgrp/LazySD-Models/main"
 
     # ---------- QuantFunc auth ----------
     # Optional user API key (format "qf_..."). Passed to the engine as --apikey.

@@ -3767,6 +3767,32 @@ def create_app() -> FastAPI:
             raise HTTPException(400, str(e))
 
 
+    @app.get("/api/hub/models")
+    async def api_hub_models(refresh: bool = False):
+        """Fetch model catalog from LazySD-Models hub repository."""
+        from backend.hub import fetch_hub_catalog
+        return fetch_hub_catalog(refresh=refresh)
+
+
+    @app.post("/api/hub/install")
+    async def api_hub_install(payload: dict = None, request: Request = None):
+        """Install a model card JSON from LazySD-Models hub."""
+        payload = payload or {}
+        if request:
+            from backend.accounts import resolve_account_from_scope
+            caller = request.scope.get("state", {}).get("account") or resolve_account_from_scope(request.scope)
+            if caller.get("is_guest", False):
+                raise HTTPException(403, "Guests cannot install model cards")
+        from backend.hub import install_hub_card
+        card_file = str(payload.get("card_file") or "").strip()
+        if not card_file:
+            raise HTTPException(400, "Missing 'card_file' parameter")
+        try:
+            return install_hub_card(card_file)
+        except Exception as e:
+            raise HTTPException(400, str(e))
+
+
     @app.get("/api/models/{model_id}/state")
 
 

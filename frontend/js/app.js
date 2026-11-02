@@ -4489,6 +4489,167 @@ const App = {
     if (modal) modal.style.display = "none";
   },
 
+  // ---------- LazySD-Models Cloud Catalog Hub ----------
+
+  async openHubCatalogModal() {
+    const modal = document.getElementById("hub-catalog-modal");
+    if (!modal) return;
+    modal.style.display = "flex";
+    if (!this.state.hubCatalog || !this.state.hubCatalog.length) {
+      await this.loadHubCatalog();
+    } else {
+      this.renderHubCatalog();
+    }
+    const searchInput = document.getElementById("hub-catalog-search");
+    if (searchInput) {
+      searchInput.value = this.state.hubCatalogSearch || "";
+      searchInput.focus();
+    }
+  },
+
+  closeHubCatalogModal() {
+    const modal = document.getElementById("hub-catalog-modal");
+    if (modal) modal.style.display = "none";
+  },
+
+  async loadHubCatalog(refresh = false) {
+    const grid = document.getElementById("hub-catalog-grid");
+    if (grid) {
+      grid.innerHTML = `<div class="placeholder-text" style="grid-column: 1 / -1; padding: 40px; text-align: center;">⏳ Загрузка каталога моделей...</div>`;
+    }
+    try {
+      const data = await this.apiGet(`/api/hub/models${refresh ? "?refresh=true" : ""}`);
+      this.state.hubCatalog = data.models || [];
+      const badge = document.getElementById("hub-catalog-count-badge");
+      if (badge) {
+        badge.textContent = `${data.count || 0} моделей (${data.installed_count || 0} уст.)`;
+      }
+      if (data.warning) {
+        this.showToast(data.warning, "warning");
+      }
+      this.renderHubCatalog();
+    } catch (e) {
+      if (grid) {
+        grid.innerHTML = `<div class="placeholder-text" style="grid-column: 1 / -1; padding: 40px; text-align: center; color: var(--error);">❌ Ошибка загрузки каталога: ${escapeHtml(e.message || String(e))}</div>`;
+      }
+    }
+  },
+
+  async refreshHubCatalog() {
+    await this.loadHubCatalog(true);
+    this.showToast("Каталог моделей обновлен!", "success");
+  },
+
+  onHubCatalogSearch(query) {
+    this.state.hubCatalogSearch = (query || "").toLowerCase().trim();
+    this.renderHubCatalog();
+  },
+
+  setHubArchFilter(arch, btnEl) {
+    this.state.hubCatalogArch = arch;
+    document.querySelectorAll("#hub-catalog-arch-filters .filter-chip").forEach(el => {
+      el.classList.toggle("active", el === btnEl);
+    });
+    this.renderHubCatalog();
+  },
+
+  setHubEngineFilter(engine, btnEl) {
+    this.state.hubCatalogEngine = engine;
+    const parent = btnEl ? btnEl.parentElement : null;
+    if (parent) {
+      parent.querySelectorAll(".filter-chip").forEach(el => {
+        el.classList.toggle("active", el === btnEl);
+      });
+    }
+    this.renderHubCatalog();
+  },
+
+  renderHubCatalog() {
+    const grid = document.getElementById("hub-catalog-grid");
+    if (!grid) return;
+    const items = this.state.hubCatalog || [];
+    if (!items.length) {
+      grid.innerHTML = `<div class="placeholder-text" style="grid-column: 1 / -1; padding: 40px; text-align: center;">Каталог пуст или недоступен.</div>`;
+      return;
+    }
+
+    const q = this.state.hubCatalogSearch || "";
+    const archFilter = this.state.hubCatalogArch || "all";
+    const engineFilter = this.state.hubCatalogEngine || "all";
+
+    const filtered = items.filter(m => {
+      if (archFilter !== "all" && m.target_architecture !== archFilter) return false;
+      if (engineFilter !== "all" && (m.engine || "quantfunc").toLowerCase() !== engineFilter.toLowerCase()) return false;
+      if (q) {
+        const text = `${m.name || ""} ${m.id || ""} ${m.target_architecture || ""} ${m.description || ""} ${(m.tags || []).join(" ")}`.toLowerCase();
+        if (!text.includes(q)) return false;
+      }
+      return true;
+    });
+
+    if (!filtered.length) {
+      grid.innerHTML = `<div class="placeholder-text" style="grid-column: 1 / -1; padding: 40px; text-align: center;">Ничего не найдено по заданным фильтрам.</div>`;
+      return;
+    }
+
+    grid.innerHTML = filtered.map(m => {
+      const archLabel = m.target_architecture || m.family || "all";
+      const engineLabel = (m.engine || "quantfunc").toUpperCase();
+      const isInstalled = !!m.installed;
+      const vramMin = m.vram_min_gb ? `${m.vram_min_gb} GB` : "8 GB";
+      const actionHtml = isInstalled
+        ? `<span class="lora-compat-badge compatible" style="padding: 4px 10px; font-size: 11px;">✅ Установлена</span>`
+        : `<button type="button" class="generate-btn" style="height: 30px; font-size: 11px; padding: 0 12px; background: var(--accent);" onclick="App.installHubCard('${escapeHtml(m.card_file || m.id + '.json')}', this)">📥 Установить карточку</button>`;
+
+      return `
+        <div class="card-editor-component-item" style="display: flex; flex-direction: column; justify-content: space-between; padding: 12px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;">
+          <div>
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px;">
+              <strong style="font-size: 13px; line-height: 1.3;">${escapeHtml(m.name || m.id)}</strong>
+              <span class="lora-compat-badge" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; font-size: 10px; white-space: nowrap;">${escapeHtml(engineLabel)}</span>
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap;">
+              <span class="lora-compat-badge" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; font-size: 10px;">⚡ ${escapeHtml(archLabel)}</span>
+              <span class="card-tag" style="font-size: 10px;">VRAM: ${escapeHtml(vramMin)}</span>
+            </div>
+            <p style="margin: 0 0 10px; font-size: 11px; color: var(--text-dim); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;">
+              ${escapeHtml(m.description || "Официальная оптимизированная карточка модели.")}
+            </p>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); padding-top: 8px; margin-top: auto;">
+            <span style="font-size: 10px; color: var(--text-dim);">${escapeHtml(m.card_file || "")}</span>
+            ${actionHtml}
+          </div>
+        </div>
+      `;
+    }).join("");
+  },
+
+  async installHubCard(cardFile, btnEl) {
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = "⏳ Установка...";
+    }
+    try {
+      const res = await this.apiPost("/api/hub/install", { card_file: cardFile });
+      this.showToast(res.message || "Карточка успешно установлена!", "success");
+      if (this.state.hubCatalog) {
+        const item = this.state.hubCatalog.find(x => (x.card_file === cardFile || x.id === res.model_id));
+        if (item) item.installed = true;
+      }
+      this.renderHubCatalog();
+      if (typeof this.loadModels === "function") {
+        await this.loadModels();
+      }
+    } catch (e) {
+      this.showToast("Ошибка установки карточки: " + (e.message || String(e)), "error");
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.textContent = "📥 Установить карточку";
+      }
+    }
+  },
+
   populateCustomFileSelects(files) {
     const modelSel = document.getElementById("custom-model-file-select");
     const teSel = document.getElementById("custom-te-file-select");
