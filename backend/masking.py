@@ -727,3 +727,119 @@ def mask_file_name(prefix: str = "mask", extension: str = ".png") -> str:
     """Build a safe file name for a mask artefact."""
     safe_prefix = "".join(ch for ch in prefix if ch.isalnum() or ch in ("-", "_")) or "mask"
     return f"{safe_prefix}_{os.getpid()}{extension}"
+
+
+def split_mask_into_islands(
+    mask: np.ndarray,
+    base_box: Tuple[int, int, int, int],
+    min_area: int = 256,
+    merge_distance: int = 64,
+) -> list:
+    """Split a binary mask into connected components (islands).
+
+    Returns a list of dicts, each containing:
+        - ``box``: ``(x0, y0, x1, y1)`` crop box for the island
+        - ``mask``: cropped binary array for the island
+        - ``area``: number of non-zero pixels
+
+    Islands closer than ``merge_distance`` pixels are merged into a single
+    island to avoid overlapping crops.  Islands smaller than ``min_area``
+    pixels are discarded.
+
+    Uses ``scipy.ndimage.label`` when available (fast), falling back to a
+    simple flood-fill implementation when scipy is not installed.
+    """
+    arr = np.asarray(mask, dtype=np.uint8)
+    if arr.ndim != 2 or arr.size == 0:
+        return []
+
+    # Try scipy first (much faster for large masks)
+    try:
+        from scipy.ndimage import label as _scipy_label
+        component_mask, num_features = _scipy_label(arr > 0)
+        if num_features == 0:
+            return []
+    except ImportError:
+        # Fallback: simple flood-fill using BFS
+        component_mask = np.zeros(arr.shape, dtype=np.int32)
+        num_features = 0
+        visited = np.zeros(arr.shape, dtype=bool)
+        for y in range(arr.shape[0]):
+            for x in range(arr.shape[1]):
+                if arr[y, x] > 0 and not visited[y, x]:
+                    num_features += 1
+                    # BFS flood-fill
+                    queue = [(x, y)]
+                    visited[y, x] = True
+                    component_mask[y, x] = num_features
+                    while queue:
+                        cx, cy = queue.pop(0)
+                        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nx, ny = cx + dx, cy + dy
+                            if (
+                                0 <= nx < arr.shape[1]
+                                and 0 <= ny < arr.shape[0]
+                                and arr[ny, nx] > 0
+                                and not visited[ny, nx]
+                            ):
+                                visited[ny, nx] = True
+                                component_mask[ny, nx] = num_features
+                                queue.append((nx, ny))
+
+    x0, y0, x1, y1 = (int(v) for v in base_box)
+    crop_arr = arr[y0:y1, x0:x1]
+    crop_comp = component_mask[y0:y1, x0:x1]
+
+    islands = []
+    for comp_id in range(1, num_features + 1):
+        comp = (crop_comp == comp_id)
+        area = int(comp.sum())
+        if area < min_area:
+            continue
+        ys, xs = np.nonzero(comp)
+        if xs.size == 0:
+            continue
+        ix0 = int(xs.min())
+        iy0 = int(ys.min())
+        ix1 = int(xs.max()) + 1
+        iy1 = int(ys.max()) + 1
+        # Add padding to island box
+        pad = max(16, min(64, (ix1 - ix0) // 4))
+        ix0 = max(0, ix0 - pad)
+        iy0 = max(0, iy0 - pad)
+        ix1 = min(crop_arr.shape[1], ix1 + pad)
+        iy1 = min(crop_arr.shape[0], iy1 + pad)
+        islands.append({
+            "box": (x0 + ix0, y0 + iy0, x0 + ix1, y0 + iy1),
+            "mask": np.ascontiguousarray(crop_arr[iy0:iy1, ix0:ix1]),
+            "area": area,
+        })
+
+    # Sort by area (largest first)
+    islands.sort(key=lambda i: i["area"], reverse=True)
+
+    # Merge nearby islands
+    if merge_distance > 0 and len(islands) > 1:
+        merged = [islands[0]]
+        for island in islands[1:]:
+            should_merge = False
+            for i, existing in enumerate(merged):
+                ex0, ey0, ex1, ey1 = existing["box"]
+                ix0, iy0, ix1, iy1 = island["box"]
+                # Check if boxes are close enough to merge
+                dx = max(0, ex0 - ix1, ix0 - ex1)
+                dy = max(0, ey0 - iy1, iy0 - ey1)
+                if dx <= merge_distance and dy <= merge_distance:
+                    # Merge: expand box to cover both
+                    mx0, my0 = min(ex0, ix0), min(ey0, iy0)
+                    mx1, my1 = max(ex1, ix1), max(ey1, iy1)
+                    existing["box"] = (mx0, my0, mx1, my1)
+                    existing["mask"] = np.ascontiguousarray(arr[my0:my1, mx0:mx1])
+                    existing["area"] += island["area"]
+                    should_merge = True
+                    break
+            if not should_merge:
+                merged.append(island)
+        islands = merged
+
+    return islands

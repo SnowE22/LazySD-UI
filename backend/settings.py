@@ -154,6 +154,16 @@ class Settings(BaseModel):
     share_auto_start: bool = False               # start the tunnel with the server
     share_allow_admin: bool = False              # let remote visitors use admin endpoints
 
+    # ---------- Vision / Inpaint Prompt Assistant ----------
+    vision_enabled: bool = True
+    vision_provider: str = "ollama"
+    vision_model: str = "qwen2.5vl:3b"
+    vision_ollama_url: str = "http://127.0.0.1:11434"
+    vision_keep_alive: str = "0s"
+    vision_timeout_sec: int = 120
+    vision_max_image_dim: int = 1024
+    vision_fallback_enabled: bool = True
+
     # ---------- State ----------
     first_run_completed: bool = False
 
@@ -185,6 +195,29 @@ class Settings(BaseModel):
         if v not in ("texture_fix", "official"):
             raise ValueError(f"qwen_vae_type must be 'texture_fix' or 'official', got {v!r}")
         return v
+
+    @field_validator("vision_provider")
+    @classmethod
+    def _validate_vision_provider(cls, v: str) -> str:
+        if v not in ("ollama", "llamacpp"):
+            raise ValueError(f"vision_provider must be 'ollama' or 'llamacpp', got {v!r}")
+        return v
+
+    @field_validator("vision_timeout_sec")
+    @classmethod
+    def _validate_vision_timeout_sec(cls, v: int) -> int:
+        val = int(v)
+        if val < 5 or val > 600:
+            raise ValueError("vision_timeout_sec must be between 5 and 600")
+        return val
+
+    @field_validator("vision_max_image_dim")
+    @classmethod
+    def _validate_vision_max_image_dim(cls, v: int) -> int:
+        val = int(v)
+        if val < 256 or val > 2048:
+            raise ValueError("vision_max_image_dim must be between 256 and 2048")
+        return val
 
     # ---------- Path helpers ----------
     @property

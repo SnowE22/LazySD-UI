@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+import numpy as np
+
 from .gpu import GPUInfo
 from .registry.loader import ModelSpec
 
@@ -740,11 +742,18 @@ class SDCppWorker:
                 raise ValueError(str(exc)) from exc
 
             crop_mode = normalize_crop_mode(getattr(request, "mask_crop_mode", "auto"))
+            # sd.cpp requires 64px alignment and 512px min size for optimal
+            # latent-space compatibility (64 * 8 = 512 tokens).  Pass engine-
+            # specific values so other engines (QuantFunc, Nunchaku) keep
+            # their native 16px / 256px defaults.
+            sd_align = 64
+            sd_min_size = 512
             crop_box = resolve_crop_box(
                 engine_mask,
                 mode=crop_mode,
                 padding=getattr(request, "mask_crop_padding", 64),
-                min_size=getattr(request, "mask_crop_min_size", 256),
+                align=sd_align,
+                min_size=sd_min_size,
                 manual_box=getattr(request, "mask_crop_box", None),
                 coverage_mask=raw_mask,
             )
@@ -791,6 +800,30 @@ class SDCppWorker:
                     f"{source_image.size[0]}x{source_image.size[1]}"
                 ),
             ))
+
+            # Optional: split mask into connected components (islands) and
+            # process each separately.  Enabled when request carries
+            # mask_split_islands=true.
+            _split_islands = getattr(request, "mask_split_islands", False)
+            if _split_islands:
+                from .masking import split_mask_into_islands
+                _island_boxes = split_mask_into_islands(
+                    raw_mask,
+                    base_box=crop_box,
+                    min_area=256,
+                    merge_distance=64,
+                )
+                if len(_island_boxes) > 1:
+                    mask_ctx["island_boxes"] = _island_boxes
+                    logger.info(
+                        "[sd_cpp] Mask split into %d island(s): %s",
+                        len(_island_boxes),
+                        [_is["box"] for _is in _island_boxes],
+                    )
+                else:
+                    mask_ctx["island_boxes"] = None
+            else:
+                mask_ctx["island_boxes"] = None
 
         # ``mask_strength`` may legitimately be 0.0, so ``or`` must NOT be
         # used here — it would silently turn 0 into 1.
@@ -1080,9 +1113,11 @@ class SDCppWorker:
         # The engine ran on the mask-bbox crop; paste the composited crop back
         # into the ORIGINAL frame.  Outside the crop the source stays
         # bit-identical.  The raw engine output is kept as the Inpaint fragment.
+        # Soft-edge blending: apply 3px Gaussian blur to the mask before
+        # compositing to avoid visible seams at crop boundaries.
         raw_fragment_rel = None
         if mask_ctx is not None:
-            from PIL import Image
+            from PIL import Image, ImageFilter
             from .masking import (
                 composite_crop_into_image,
                 paste_crop_into_image,
@@ -1092,10 +1127,20 @@ class SDCppWorker:
                 with Image.open(output_path) as gen_file:
                     generated_rgb = gen_file.convert("RGB")
                 source_image = mask_ctx["source_image"]
+
+                # Soft-edge mask: blur the raw crop mask for seamless blending
+                _soft_mask = mask_ctx["crop_array"]
+                _blur_radius = int(getattr(request, "mask_composite_blur", 3) or 3)
+                if _blur_radius > 0 and _soft_mask is not None:
+                    _mask_uint8 = (np.clip(_soft_mask, 0.0, 1.0) * 255.0).astype(np.uint8)
+                    _mask_pil = Image.fromarray(_mask_uint8, mode="L")
+                    _blurred_pil = _mask_pil.filter(ImageFilter.GaussianBlur(radius=_blur_radius))
+                    _soft_mask = np.asarray(_blurred_pil, dtype=np.float32) / 255.0
+
                 composite = composite_crop_into_image(
                     generated_rgb,
                     source_image,
-                    mask_ctx["crop_array"],
+                    _soft_mask,
                     mask_ctx["box"],
                 )
                 composite.save(output_path, format="PNG")

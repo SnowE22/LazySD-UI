@@ -13226,6 +13226,10 @@ Object.assign(App, {
 
     if (hintEl) hintEl.style.display = state.source ? "none" : "flex";
     if (clearBtn) clearBtn.disabled = !state.source;
+    const promptBtn = document.getElementById("inpaint-generate-prompt-btn");
+    if (promptBtn && !state.generatingPrompt) {
+      promptBtn.disabled = !(state.source && layer && layer.surface && !layer.surface.isEmpty());
+    }
 
     if (!statusEl) return;
     if (!state.source) {
@@ -13387,10 +13391,23 @@ Object.assign(App, {
       return;
     }
 
-    const steps = parseInt(document.getElementById("inpaint-steps")?.value || "4", 10);
+    const selectedVariantId = document.getElementById("inpaint-variant-select")?.value || "";
+    const selectedVariant = state.inpaintModelState?.transformers?.find((v) => v.id === selectedVariantId);
+    const stepsInput = parseInt(document.getElementById("inpaint-steps")?.value || "", 10);
+    const steps = Number.isFinite(stepsInput) ? stepsInput : (Number(selectedVariant?.steps) || 4);
     const cfg = parseFloat(document.getElementById("inpaint-cfg")?.value || "1.0");
     const seedRaw = document.getElementById("inpaint-seed")?.value?.trim();
     const seed = seedRaw === "" || seedRaw === "random" ? null : parseInt(seedRaw, 10);
+    const teSelect = document.getElementById("inpaint-text-encoder-select");
+    const customTeInput = document.getElementById("inpaint-custom-text-encoder-input");
+    const customTeVal = customTeInput && customTeInput.style.display !== "none"
+      ? customTeInput.value.trim()
+      : "";
+    const vaeSelect = document.getElementById("inpaint-vae-select");
+    const customVaeInput = document.getElementById("inpaint-custom-vae-input");
+    const customVaeVal = customVaeInput && customVaeInput.style.display !== "none"
+      ? customVaeInput.value.trim()
+      : "";
 
     // Generation area (crop mode).
     const crop = this.getInpaintCropState() || { mode: "auto", padding: 64, minSize: 256, box: null };
@@ -13416,6 +13433,7 @@ Object.assign(App, {
 
     const params = {
       model_id: modelId,
+      variant_id: selectedVariantId || undefined,
       prompt,
       width: state.source.width,
       height: state.source.height,
@@ -13434,6 +13452,22 @@ Object.assign(App, {
       mask_crop_min_size: Math.round(Number(crop.minSize) || 256),
       mask_crop_box: cropBox,
     };
+
+    if (customTeVal) {
+      params.custom_text_encoder_path = customTeVal;
+    } else if (teSelect?.value && teSelect.value !== "custom") {
+      params.text_encoder_id = teSelect.value;
+    }
+
+    if (customVaeVal) {
+      params.custom_vae_path = customVaeVal;
+    } else if (vaeSelect?.value && vaeSelect.value !== "auto" && vaeSelect.value !== "custom") {
+      if (vaeSelect.value.startsWith("file:")) {
+        params.custom_vae_path = vaeSelect.value.slice(5);
+      } else {
+        params.vae = vaeSelect.value;
+      }
+    }
 
     state.generating = true;
     const btn = document.getElementById("inpaint-generate-btn");
@@ -13615,6 +13649,468 @@ Object.assign(App, {
     warnEl.innerHTML = `⚠ ${this.maskT("inpaint.hint.model_unsupported_short", "Модель не поддерживает маску")} — ${compatible.map((m) => escapeHtml(m.name)).join(", ") || "—"}`;
   },
 
+  // Resolve the recommended steps/CFG for a variant.  Distilled variants
+  // use the model card's "default" preset; undistilled "base" variants have
+  // a separate preset (e.g. Flux.3 Klein Base needs 20 steps / CFG 3.5).
+  resolveInpaintVariantDefaults(model, variant) {
+    const presets = (model && model.scheduler_presets) || {};
+    const isBase = /(^|[_-])base([_-]|$)/i.test(String(variant?.id || ""));
+    const preset = (isBase && presets.base) || presets.default || {};
+    const steps = Number(variant?.steps ?? preset.steps);
+    const cfg = Number(preset.cfg ?? preset.guidance_scale ?? model?.default_cfg);
+    return {
+      steps: Number.isFinite(steps) && steps > 0 ? Math.round(steps) : null,
+      cfg: Number.isFinite(cfg) && cfg > 0 ? cfg : null,
+    };
+  },
+
+  // Inpaint uses a masked img2img run, so it must inherit the selected
+  // model's step/CFG defaults.  The panel used to hardcode 4 steps / CFG 1.0,
+  // which silently degraded 16-28 step models (Flux.2/3 Klein, Qwen-Image)
+  // into blurry/unrelated patches.
+  applyInpaintModelDefaults() {
+    const select = document.getElementById("inpaint-model-select");
+    if (!select) return;
+    const model = (this.state.models || []).find((m) => m.id === select.value);
+    if (!model) return;
+
+    const state = this.getInpaintState();
+    const loadedState = state?.inpaintModelState;
+    const variants = Array.isArray(loadedState?.transformers) && loadedState.model_id === model.id
+      ? loadedState.transformers
+      : (Array.isArray(model.transformers) ? model.transformers : []);
+    const variant = variants.find((v) => v.installed) || variants[0];
+    const defaults = this.resolveInpaintVariantDefaults(model, variant);
+
+    const stepsInput = document.getElementById("inpaint-steps");
+    if (stepsInput && defaults.steps != null) {
+      stepsInput.value = String(defaults.steps);
+    }
+    const cfgInput = document.getElementById("inpaint-cfg");
+    if (cfgInput && defaults.cfg != null) {
+      cfgInput.value = defaults.cfg.toFixed(1);
+    }
+  },
+
+  // Mirror the Generate tab's quantization / text-encoder pickers.  The
+  // inpaint request is handled by the same backend endpoint, so it accepts
+  // variant_id, text_encoder_id and custom_text_encoder_path too.
+  async loadInpaintModelState(modelId, preferredVariantId = null) {
+    const state = this.getInpaintState();
+    if (!state || !modelId) return;
+    const requestId = (state._modelStateRequestId = (state._modelStateRequestId || 0) + 1);
+    let modelState;
+    try {
+      modelState = await this.apiGet(`/api/models/${encodeURIComponent(modelId)}/state`);
+    } catch (e) {
+      console.warn("[inpaint] Failed to load model state:", e);
+      return;
+    }
+    if (requestId !== state._modelStateRequestId) return;
+    const select = document.getElementById("inpaint-model-select");
+    if (!select || select.value !== modelId) return;
+
+    state.inpaintModelState = modelState;
+    this.renderInpaintVariantSelect(modelState, preferredVariantId);
+    this.renderInpaintTextEncoderSelect(modelState);
+    this.renderInpaintVaeSelect(modelState);
+  },
+
+  renderInpaintVariantSelect(modelState, preferredVariantId = null) {
+    const select = document.getElementById("inpaint-variant-select");
+    if (!select) return;
+    const variants = Array.isArray(modelState?.transformers) ? modelState.transformers : [];
+    select.innerHTML = "";
+    if (!variants.length) {
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+
+    // Recommended variants first, matching the Generate tab's grouping.
+    const ordered = [
+      ...variants.filter((v) => v.recommended),
+      ...variants.filter((v) => !v.recommended),
+    ];
+    for (const v of ordered) {
+      const opt = document.createElement("option");
+      opt.value = v.id;
+      const isInstalled = Boolean(v.installed) || v.state === "cached" || v.state === "installed";
+      const mark = isInstalled ? "✓" : "⬇";
+      const backend = v.backend || modelState.gpu_tier || "";
+      opt.textContent = `${mark} ${v.id}${backend ? ` (${backend}, ${v.steps} steps)` : ` (${v.steps} steps)`}`;
+      opt.title = isInstalled ? v.id : `${v.id} — ${v.state_label || "not installed"}`;
+      // Prevent selecting files that are not on disk; the engine would fail
+      // later with "diffusion model file not found".
+      opt.disabled = !isInstalled;
+      select.appendChild(opt);
+    }
+
+    const preferred = preferredVariantId ? variants.find((v) => v.id === preferredVariantId) : null;
+    const installed = variants.find((v) => v.installed || v.state === "cached" || v.state === "installed");
+    const preferredReady = preferred && (preferred.installed || preferred.state === "cached" || preferred.state === "installed");
+    const active = preferredReady
+      ? preferred
+      : (installed || variants.find((v) => v.recommended) || variants[0]);
+    if (active) {
+      select.value = active.id;
+      const model = (this.state.models || []).find((m) => m.id === modelState?.model_id);
+      const defaults = this.resolveInpaintVariantDefaults(model, active);
+      const stepsInput = document.getElementById("inpaint-steps");
+      if (stepsInput && defaults.steps != null) {
+        stepsInput.value = String(defaults.steps);
+      }
+      const cfgInput = document.getElementById("inpaint-cfg");
+      if (cfgInput && defaults.cfg != null) {
+        cfgInput.value = defaults.cfg.toFixed(1);
+      }
+    }
+  },
+
+  renderInpaintTextEncoderSelect(modelState) {
+    const block = document.getElementById("inpaint-text-encoder-block");
+    const select = document.getElementById("inpaint-text-encoder-select");
+    const customInput = document.getElementById("inpaint-custom-text-encoder-input");
+    if (!select) return;
+    const encoders = Array.isArray(modelState?.text_encoders) ? modelState.text_encoders : [];
+    select.innerHTML = "";
+    if (!encoders.length) {
+      select.disabled = true;
+      if (block) block.style.display = "none";
+      if (customInput) {
+        customInput.style.display = "none";
+        customInput.value = "";
+      }
+      return;
+    }
+
+    select.disabled = false;
+    if (block) block.style.display = "flex";
+    const ordered = [
+      ...encoders.filter((te) => te.installed),
+      ...encoders.filter((te) => !te.installed),
+    ];
+    for (const te of ordered) {
+      const opt = document.createElement("option");
+      opt.value = te.id;
+      opt.textContent = `${te.installed ? "✓" : "⬇"} ${te.name || te.id}`;
+      opt.title = te.file || te.id;
+      opt.disabled = te.installed === false;
+      select.appendChild(opt);
+    }
+    const customOpt = document.createElement("option");
+    customOpt.value = "custom";
+    customOpt.textContent = "Custom file / ComfyUI...";
+    select.appendChild(customOpt);
+
+    const active = ordered.find((te) => te.installed) || ordered.find((te) => te.recommended) || ordered[0];
+    if (active) select.value = active.id;
+    if (customInput) {
+      customInput.style.display = select.value === "custom" ? "block" : "none";
+      customInput.value = "";
+    }
+  },
+
+  renderInpaintVaeSelect(modelState) {
+    const block = document.getElementById("inpaint-vae-block");
+    const select = document.getElementById("inpaint-vae-select");
+    const customInput = document.getElementById("inpaint-custom-vae-input");
+    if (!select) return;
+    const model = (this.state.models || []).find((m) => m.id === modelState?.model_id);
+    const vaeList = (Array.isArray(modelState?.vae_files) && modelState.vae_files.length)
+      ? modelState.vae_files
+      : (modelState?.vae ? [modelState.vae] : []);
+    const isQwen = Boolean(model && (model.family === "qwen" || model.id.includes("qwen")));
+    select.innerHTML = "";
+    if (!isQwen && !vaeList.length) {
+      select.disabled = true;
+      if (block) block.style.display = "none";
+      if (customInput) {
+        customInput.style.display = "none";
+        customInput.value = "";
+      }
+      return;
+    }
+
+    select.disabled = false;
+    if (block) block.style.display = "flex";
+    const autoOpt = document.createElement("option");
+    autoOpt.value = "auto";
+    autoOpt.textContent = t("controls.vae_auto") || "Auto (model default)";
+    select.appendChild(autoOpt);
+    if (isQwen) {
+      for (const value of ["texture_fix", "official"]) {
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = t(`controls.vae_${value}`) || value;
+        select.appendChild(opt);
+      }
+    }
+    for (const vae of vaeList.filter((v) => v.installed && v.local_file)) {
+      const fileName = String(vae.path || vae.local_file).split("/").pop() || "VAE";
+      const opt = document.createElement("option");
+      opt.value = `file:${vae.local_file}`;
+      opt.textContent = fileName;
+      opt.title = vae.local_file;
+      select.appendChild(opt);
+    }
+    const customOpt = document.createElement("option");
+    customOpt.value = "custom";
+    customOpt.textContent = "Custom file / ComfyUI...";
+    select.appendChild(customOpt);
+
+    const desired = this.state.selectedVae
+      || (isQwen ? (this.state.settings?.qwen_vae_type || "texture_fix") : "auto");
+    select.value = [...select.options].some((opt) => opt.value === desired) ? desired : "auto";
+    if (customInput) {
+      customInput.style.display = "none";
+      customInput.value = "";
+    }
+  },
+
+  onInpaintVariantChange() {
+    const state = this.getInpaintState();
+    const select = document.getElementById("inpaint-variant-select");
+    const variant = state?.inpaintModelState?.transformers?.find((v) => v.id === select?.value);
+    if (!variant) return;
+    const modelSelect = document.getElementById("inpaint-model-select");
+    const model = (this.state.models || []).find((m) => m.id === modelSelect?.value);
+    const defaults = this.resolveInpaintVariantDefaults(model, variant);
+    const stepsInput = document.getElementById("inpaint-steps");
+    if (stepsInput && defaults.steps != null) {
+      stepsInput.value = String(defaults.steps);
+    }
+    const cfgInput = document.getElementById("inpaint-cfg");
+    if (cfgInput && defaults.cfg != null) {
+      cfgInput.value = defaults.cfg.toFixed(1);
+    }
+  },
+
+  onInpaintTextEncoderChange() {
+    const select = document.getElementById("inpaint-text-encoder-select");
+    const customInput = document.getElementById("inpaint-custom-text-encoder-input");
+    if (!select || !customInput) return;
+    const isCustom = select.value === "custom";
+    customInput.style.display = isCustom ? "block" : "none";
+    if (isCustom) customInput.focus();
+  },
+
+  async loadInpaintVisionModels() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    try {
+      const data = await this.apiGet("/api/vision/models");
+      state.visionModels = Array.isArray(data?.models) ? data.models : [];
+      state.ollamaAvailable = Boolean(data?.available);
+      this.renderInpaintVisionModels();
+    } catch (e) {
+      console.warn("[inpaint] Failed to load vision models:", e);
+      state.visionModels = [];
+      state.ollamaAvailable = false;
+      this.renderInpaintVisionModels();
+    }
+  },
+
+  renderInpaintVisionModels() {
+    const state = this.getInpaintState();
+    const select = document.getElementById("inpaint-vision-model-select");
+    if (!state || !select) return;
+
+    let savedModel = "";
+    try { savedModel = localStorage.getItem("lazysd_inpaint_vision_model") || ""; } catch (_) {}
+    const prevValue = select.value || savedModel || this.state?.settings?.vision_model || "qwen2.5vl:3b";
+
+    select.innerHTML = "";
+    const models = Array.isArray(state.visionModels) ? state.visionModels : [];
+    for (const m of models) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      const mark = m.installed ? "✓" : (m.status === "downloading" ? "⏳" : "⬇");
+      opt.textContent = `${mark} ${m.name} (${m.size_gb} GB)`;
+      opt.title = m.description || m.id;
+      select.appendChild(opt);
+    }
+
+    const heurOpt = document.createElement("option");
+    heurOpt.value = "heuristic";
+    heurOpt.textContent = state.ollamaAvailable
+      ? this.maskT("inpaint.assistant.heuristic_only", "Эвристика (без VLM)")
+      : this.maskT("inpaint.assistant.ollama_offline", "Ollama не запущена (эвристика)");
+    select.appendChild(heurOpt);
+
+    if ([...select.options].some((o) => o.value === prevValue)) {
+      select.value = prevValue;
+    } else {
+      const installed = models.find((m) => m.installed);
+      const recommended = models.find((m) => m.recommended);
+      select.value = (installed || recommended)?.id || "heuristic";
+    }
+    this.onInpaintVisionModelChange();
+  },
+
+  onInpaintVisionModelChange() {
+    const state = this.getInpaintState();
+    const select = document.getElementById("inpaint-vision-model-select");
+    const dlBtn = document.getElementById("inpaint-vision-download-btn");
+    const delBtn = document.getElementById("inpaint-vision-delete-btn");
+    if (!state || !select) return;
+
+    const val = select.value;
+    try { localStorage.setItem("lazysd_inpaint_vision_model", val); } catch (_) {}
+
+    const entry = (state.visionModels || []).find((m) => m.id === val);
+    const canDownload = Boolean(state.ollamaAvailable && entry && !entry.installed && entry.status !== "downloading");
+    const canDelete = Boolean(state.ollamaAvailable && entry && entry.installed);
+    if (dlBtn) dlBtn.style.display = canDownload ? "inline-flex" : "none";
+    if (delBtn) delBtn.style.display = canDelete ? "inline-flex" : "none";
+  },
+
+  async downloadInpaintVisionModel() {
+    const state = this.getInpaintState();
+    const select = document.getElementById("inpaint-vision-model-select");
+    const badge = document.getElementById("inpaint-prompt-source-badge");
+    if (!state || !select || !select.value || select.value === "heuristic") return;
+
+    const modelId = select.value;
+    try {
+      if (badge) {
+        badge.style.display = "inline-block";
+        badge.textContent = "⏳ 0%";
+      }
+      await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {});
+      this.toast("info", `Загрузка ${modelId} запущена...`);
+      for (let i = 0; i < 300; i += 1) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const data = await this.apiGet("/api/vision/models");
+        state.visionModels = Array.isArray(data?.models) ? data.models : [];
+        const cur = state.visionModels.find((m) => m.id === modelId);
+        if (!cur) break;
+        if (cur.status === "downloading") {
+          if (badge) {
+            badge.style.display = "inline-block";
+            badge.textContent = `⏳ ${Math.round(cur.progress || 0)}%`;
+          }
+        } else if (cur.installed || cur.status === "installed") {
+          if (badge) badge.textContent = "✓ VLM";
+          this.toast("success", `Модель ${cur.name || modelId} установлена`);
+          break;
+        } else if (cur.status === "error") {
+          if (badge) badge.style.display = "none";
+          this.toast("error", cur.error || "Ошибка скачивания vision-модели");
+          break;
+        }
+      }
+      this.renderInpaintVisionModels();
+    } catch (e) {
+      if (badge) badge.style.display = "none";
+      this.toast("error", e.message || "Не удалось скачать vision-модель");
+    }
+  },
+
+  async deleteInpaintVisionModel() {
+    const select = document.getElementById("inpaint-vision-model-select");
+    if (!select || !select.value || select.value === "heuristic") return;
+    const modelId = select.value;
+    try {
+      const res = await fetch(`/api/vision/models/${encodeURIComponent(modelId)}?confirm=true`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      this.toast("info", `Модель ${modelId} удалена`);
+      await this.loadInpaintVisionModels();
+    } catch (e) {
+      this.toast("error", e.message || "Ошибка удаления модели");
+    }
+  },
+
+  async generateInpaintPrompt() {
+    const state = this.getInpaintState();
+    if (!state || state.generatingPrompt) return;
+    if (!state.source) {
+      this.toast("warning", this.maskT("inpaint.hint.no_source", "Сначала загрузите изображение"));
+      return;
+    }
+    const maskLayer = this.getInpaintActiveMaskLayer();
+    if (!maskLayer || maskLayer.surface.isEmpty()) {
+      this.toast("warning", this.maskT("inpaint.hint.empty_mask", "Нарисуйте маску перед генерацией"));
+      return;
+    }
+
+    const instrEl = document.getElementById("inpaint-instruction");
+    const instruction = (instrEl?.value || "").trim();
+    try { localStorage.setItem("lazysd_inpaint_instruction", instruction); } catch (_) {}
+
+    const visionSelect = document.getElementById("inpaint-vision-model-select");
+    const selectedVision = visionSelect?.value || "qwen2.5vl:3b";
+    const useVlm = selectedVision !== "heuristic";
+    const crop = this.getInpaintCropState() || { mode: "auto", padding: 64, box: null };
+
+    const btn = document.getElementById("inpaint-generate-prompt-btn");
+    const badge = document.getElementById("inpaint-prompt-source-badge");
+    state.generatingPrompt = true;
+    if (btn) btn.disabled = true;
+    if (badge) {
+      badge.style.display = "inline-block";
+      badge.textContent = this.maskT("inpaint.assistant.generating", "Анализ области...");
+    }
+
+    try {
+      const res = await this.apiPost("/api/inpaint/prompt", {
+        source_path: state.source.path,
+        mask: maskLayer.surface.toDataURL(),
+        instruction,
+        crop_mode: crop.mode || "auto",
+        crop_box: crop.mode === "manual" ? crop.box : null,
+        crop_padding: Math.max(0, Math.min(512, parseInt(crop.padding, 10) || 64)),
+        vision_model: useVlm ? selectedVision : null,
+        use_vlm: useVlm,
+      });
+
+      const promptEl = document.getElementById("inpaint-prompt");
+      const negEl = document.getElementById("inpaint-negative-prompt");
+      if (promptEl && res?.prompt) {
+        promptEl.value = res.prompt;
+        try { localStorage.setItem("lazysd_inpaint_prompt", res.prompt); } catch (_) {}
+      }
+      if (negEl && res?.negative_prompt) {
+        negEl.value = res.negative_prompt;
+        try { localStorage.setItem("lazysd_inpaint_negative_prompt", res.negative_prompt); } catch (_) {}
+      }
+
+      if (badge) {
+        badge.style.display = "inline-block";
+        const srcLabel = res?.source === "vlm"
+          ? `${this.maskT("inpaint.assistant.source_vlm", "VLM")}${res.model ? ` · ${res.model}` : ""}`
+          : this.maskT("inpaint.assistant.source_heuristic", "эвристика");
+        badge.textContent = res?.cached
+          ? `${srcLabel} (${this.maskT("inpaint.assistant.source_cached", "кэш")})`
+          : srcLabel;
+        badge.title = Array.isArray(res?.warnings) && res.warnings.length
+          ? res.warnings.join("; ")
+          : "";
+      }
+      if (Array.isArray(res?.warnings) && res.warnings.length) {
+        this.toast("info", res.warnings[0]);
+      }
+    } catch (e) {
+      if (badge) badge.style.display = "none";
+      this.toast("error", e.message || "Ошибка генерации промпта");
+    } finally {
+      state.generatingPrompt = false;
+      this.updateInpaintStatus();
+    }
+  },
+
+  onInpaintVaeChange() {
+    const select = document.getElementById("inpaint-vae-select");
+    const customInput = document.getElementById("inpaint-custom-vae-input");
+    if (!select || !customInput) return;
+    const isCustom = select.value === "custom";
+    customInput.style.display = isCustom ? "block" : "none";
+    if (isCustom) customInput.focus();
+  },
+
   useCanvasImageInInpaint() {
     const url = this.state.currentPreviewUrl;
     const path = this.state.currentPreviewFilename;
@@ -13653,6 +14149,33 @@ Object.assign(App, {
     this.initInpaintMaskEvents();
     this.initInpaintCropEvents();
     this.renderInpaintModels();
+    this.loadInpaintVisionModels();
+    const instrEl = document.getElementById("inpaint-instruction");
+    if (instrEl && !instrEl.dataset.bound) {
+      instrEl.dataset.bound = "1";
+      try {
+        const savedInstr = localStorage.getItem("lazysd_inpaint_instruction");
+        if (savedInstr && !instrEl.value) instrEl.value = savedInstr;
+      } catch (_) {}
+      instrEl.addEventListener("input", () => {
+        try { localStorage.setItem("lazysd_inpaint_instruction", instrEl.value); } catch (_) {}
+      });
+    }
+    const modelSelect = document.getElementById("inpaint-model-select");
+    // Seed steps/CFG + quantization/text-encoder lists once per page load.
+    // Later tab switches must keep whatever the user typed in the panel.
+    if (!state._inpaintDefaultsApplied) {
+      state._inpaintDefaultsApplied = true;
+      this.applyInpaintModelDefaults();
+      this.loadInpaintModelState(modelSelect?.value || this.state.selectedModel);
+    }
+    if (modelSelect && !modelSelect.dataset.defaultsBound) {
+      modelSelect.dataset.defaultsBound = "1";
+      modelSelect.addEventListener("change", () => {
+        this.applyInpaintModelDefaults();
+        this.loadInpaintModelState(modelSelect.value);
+      });
+    }
     this.renderInpaintLayersUI();
     this.renderInpaintCropUI();
     this.updateInpaintCropStatus();
