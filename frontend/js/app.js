@@ -7164,7 +7164,6 @@ const App = {
     const installBtn = document.getElementById("btn-install-ollama");
     const startBtn = document.getElementById("btn-start-ollama");
     const stopBtn = document.getElementById("btn-stop-ollama");
-    const pullBtn = document.getElementById("btn-pull-qwenvl");
     if (!badge) return;
 
     if (!o || !o.installed) {
@@ -7172,7 +7171,6 @@ const App = {
       if (installBtn) installBtn.style.display = "inline-flex";
       if (startBtn) startBtn.style.display = "none";
       if (stopBtn) stopBtn.style.display = "none";
-      if (pullBtn) pullBtn.style.display = "none";
     } else if (o.running) {
       const qwenBadge = o.has_qwen_vl ? " · Qwen2.5-VL ✓" : "";
       const modelsCount = (o.models || []).length;
@@ -7180,13 +7178,11 @@ const App = {
       if (installBtn) installBtn.style.display = "none";
       if (startBtn) startBtn.style.display = "none";
       if (stopBtn) stopBtn.style.display = "inline-flex";
-      if (pullBtn) pullBtn.style.display = o.has_qwen_vl ? "none" : "inline-flex";
     } else {
       badge.innerHTML = `<span class="state-badge missing" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);">⏸ Остановлен (v${escapeHtml(o.version || '0.40')})</span>`;
       if (installBtn) installBtn.style.display = "none";
       if (startBtn) { startBtn.style.display = "inline-flex"; startBtn.textContent = "Запустить"; }
       if (stopBtn) stopBtn.style.display = "none";
-      if (pullBtn) pullBtn.style.display = "none";
     }
   },
 
@@ -7234,25 +7230,6 @@ const App = {
       this.toast("error", "Ошибка установки Ollama: " + e.message);
     } finally {
       if (btnEl) { btnEl.disabled = false; btnEl.textContent = "Установить"; }
-    }
-  },
-
-  async pullQwenVL(btnEl) {
-    if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Загрузка Qwen..."; }
-    try {
-      this.toast("info", "Скачивание Qwen2.5-VL 3B в Ollama...");
-      const res = await this.apiPost("/api/vision/models/qwen2.5vl:3b/download");
-      if (res?.job_id && this.startDownloadPolling) {
-        this.startDownloadPolling(res.job_id, {
-          label: "VLM: Qwen2.5-VL 3B (Ollama)",
-          kind: "vision",
-          modelId: "qwen2.5vl:3b",
-        });
-      }
-    } catch (e) {
-      this.toast("error", "Ошибка скачивания: " + e.message);
-    } finally {
-      if (btnEl) { btnEl.disabled = false; btnEl.textContent = "⬇ Qwen2.5-VL"; }
     }
   },
 };
