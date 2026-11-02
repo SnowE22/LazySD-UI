@@ -756,10 +756,9 @@ def split_mask_into_islands(
     # Try scipy first (much faster for large masks)
     try:
         from scipy.ndimage import label as _scipy_label
-        _, num_features = _scipy_label(arr > 0)
+        component_mask, num_features = _scipy_label(arr > 0)
         if num_features == 0:
             return []
-        component_mask = num_features
     except ImportError:
         # Fallback: simple flood-fill using BFS
         component_mask = np.zeros(arr.shape, dtype=np.int32)
@@ -832,17 +831,11 @@ def split_mask_into_islands(
                 dy = max(0, ey0 - iy1, iy0 - ey1)
                 if dx <= merge_distance and dy <= merge_distance:
                     # Merge: expand box to cover both
-                    merged["box"] = (
-                        min(ex0, ix0),
-                        min(ey0, iy0),
-                        max(ex1, ix1),
-                        max(ey1, iy1),
-                    )
-                    merged["mask"] = crop_arr[
-                        merged["box"][1]:merged["box"][3],
-                        merged["box"][0]:merged["box"][2],
-                    ]
-                    merged["area"] += island["area"]
+                    mx0, my0 = min(ex0, ix0), min(ey0, iy0)
+                    mx1, my1 = max(ex1, ix1), max(ey1, iy1)
+                    existing["box"] = (mx0, my0, mx1, my1)
+                    existing["mask"] = np.ascontiguousarray(arr[my0:my1, mx0:mx1])
+                    existing["area"] += island["area"]
                     should_merge = True
                     break
             if not should_merge:

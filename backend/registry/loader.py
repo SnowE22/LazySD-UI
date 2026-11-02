@@ -139,6 +139,9 @@ class ModelSpec:
     # Available text encoder variants (e.g. w4a8, int8, bf16)
     text_encoders: list[dict] = field(default_factory=list)
 
+    # Associated Prompt Upsampler / VLM model IDs from backend.vision_models
+    prompt_upsamplers: list[str] = field(default_factory=list)
+
     # Custom user-imported model flag
     is_custom: bool = False
 
@@ -224,6 +227,7 @@ class ModelSpec:
             engine_args=data.get("engine_args", {}),
             engine_version=data.get("engine_version"),
             text_encoders=data.get("text_encoders", []),
+            prompt_upsamplers=list(data.get("prompt_upsamplers") or []),
             is_custom=is_custom,
             local_folder=local_folder,
             base_repo_id=str(data.get("base_repo_id") or "").strip(),

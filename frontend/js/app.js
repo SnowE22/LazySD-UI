@@ -553,6 +553,11 @@ const App = {
         : `<span class="state-badge missing">✗ ${escapeHtml(t("common.not_installed"))}</span>`;
     }
 
+    if (config.ollama) {
+      this.state.ollama = config.ollama;
+      this.renderOllamaEngineStatus();
+    }
+
     const qfToggleEl = document.getElementById("setting-enable-quantfunc");
     const qfBadgeEl = document.getElementById("setting-qf-toggle-badge");
     const qfEnabled = !!(this.state.settings?.enable_quantfunc_models);
@@ -1059,6 +1064,10 @@ const App = {
       await this.renderEncodersTab(listEl);
       return;
     }
+    if (filter === "vision") {
+      await this.renderVisionModelsTab(listEl);
+      return;
+    }
 
     const query = (this.state.modelsTabSearch || "").trim().toLowerCase();
     const filtered = this.sortModelsList(this.state.models).filter(model => {
@@ -1275,6 +1284,36 @@ const App = {
            </details>`
         : "";
 
+      const pupList = Array.isArray(model.prompt_upsamplers) ? model.prompt_upsamplers : [];
+      const pupRows = pupList.map((pup) => {
+        const tech = [
+          pup.repo_id,
+          pup.primary_file,
+          pup.provider ? String(pup.provider).toUpperCase() : "",
+          pup.size_gb ? `${pup.size_gb} GB` : "",
+        ].filter(Boolean).join(" · ");
+        const pupAction = pup.installed
+          ? `<div class="variant-actions">
+               <span class="variant-state installed" title="${escapeHtml(t("models.component_on_disk"))}">${ICON_CHECK}<span>${escapeHtml(t("models.component_on_disk"))}</span></span>
+               <button type="button" class="btn-delete-files" data-vision-id="${escapeHtml(pup.id)}" data-vision-name="${escapeHtml(pup.name || pup.id)}" onclick="App.deleteVisionModelFromHub(this.dataset.visionId, this)" title="${escapeHtml(t("models.component_delete"))} ${escapeHtml(pup.name || pup.id)}">${ICON_TRASH}<span>${escapeHtml(t("models.component_delete"))}</span></button>
+             </div>`
+          : `<button type="button" class="btn-download" data-vision-id="${escapeHtml(pup.id)}" onclick="App.downloadVisionModelFromHub(this.dataset.visionId, this)" title="${escapeHtml(t("models.component_download"))} ${escapeHtml(pup.name || pup.id)}">${ICON_DOWNLOAD}<span>${escapeHtml(t("models.component_download"))}${pup.size_gb ? ` (${pup.size_gb} GB)` : ""}</span></button>`;
+        return `
+          <div class="component-item">
+            <div class="component-info">
+              <span class="component-name">✨ ${escapeHtml(pup.name || pup.id)}</span>
+              <span class="component-sub" title="${escapeHtml(tech)}">${escapeHtml(tech)}</span>
+            </div>
+            <div class="component-actions">${pupAction}</div>
+          </div>`;
+      }).join("");
+      const pupSection = pupList.length
+        ? `<details class="model-card-section">
+             <summary class="model-card-section-title">✨ Prompt Upsampler / VLM (${pupList.length})</summary>
+             <div class="model-variants-list">${pupRows}</div>
+           </details>`
+        : "";
+
       const noticeHtml = isDisabled
         ? `<div style="margin-top: 10px; padding: 8px 12px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 6px; font-size: 12px; color: #f87171;">⚠️ ${escapeHtml(localizedDisabledReason(model.disabled_reason, "models.disabled_upstream_hint"))}</div>`
         : "";
@@ -1305,6 +1344,7 @@ const App = {
           ${teSection}
           ${vaeSection}
           ${auxSection}
+          ${pupSection}
           <div style="margin-top: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px;">
             ${selectBtnHtml}
             ${editCardBtn}
@@ -1389,9 +1429,233 @@ const App = {
       }
 
       listEl.appendChild(grid);
+      try {
+        const visionData = await this.apiGet("/api/vision/models");
+        this.state.visionModels = Array.isArray(visionData?.models) ? visionData.models : [];
+        const visionFiltered = this.state.visionModels.filter(vm => {
+          if (!query) return true;
+          return [vm.name, vm.id, vm.repo_id, vm.primary_file, vm.provider, vm.description]
+            .filter(Boolean)
+            .some(v => String(v).toLowerCase().includes(query));
+        });
+        if (visionFiltered.length) {
+          const sectionHeader = document.createElement("div");
+          sectionHeader.style.cssText = "margin: 24px 0 12px; font-size: 14px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 8px;";
+          sectionHeader.innerHTML = `<span>✨ Prompt Upsampler / VLM (Помощник промпта и FLUX.3 PUP)</span><span style="font-size: 12px; color: var(--text-muted); font-weight: 400;">(${visionFiltered.length})</span>`;
+          listEl.appendChild(sectionHeader);
+          listEl.appendChild(this.buildVisionModelsGrid(visionFiltered));
+        }
+      } catch (vErr) {
+        console.warn("[hub] Failed to append vision models to encoders tab:", vErr);
+      }
     } catch (err) {
       listEl.innerHTML = `<div class="placeholder-text" style="color: #f87171;">${escapeHtml(t("status.error"))}: ${escapeHtml(err.message)}</div>`;
     }
+  },
+
+  getVisionCardProvider(vm) {
+    if (!vm) return "ollama";
+    if (vm.provider === "nunchaku") return "nunchaku";
+    let map = {};
+    try { map = JSON.parse(localStorage.getItem("lazysd_vision_card_providers") || "{}") || {}; } catch (_) {}
+    const saved = map[vm.id];
+    const supported = Array.isArray(vm.supported_providers) && vm.supported_providers.length
+      ? vm.supported_providers
+      : (vm.provider === "nunchaku" ? ["nunchaku"] : ["ollama", "gguf"]);
+    if (saved && supported.includes(saved)) return saved;
+    if (vm.installed_ollama && supported.includes("ollama")) return "ollama";
+    if (vm.installed_local && supported.includes("gguf")) return "gguf";
+    return vm.provider || supported[0] || "ollama";
+  },
+
+  onVisionCardProviderChange(modelId, provider) {
+    if (!modelId || !provider) return;
+    try {
+      const map = JSON.parse(localStorage.getItem("lazysd_vision_card_providers") || "{}") || {};
+      map[modelId] = provider;
+      localStorage.setItem("lazysd_vision_card_providers", JSON.stringify(map));
+    } catch (_) {}
+    this.renderModelsTab();
+  },
+
+  buildVisionModelsGrid(models) {
+    const grid = document.createElement("div");
+    grid.className = "encoders-grid";
+    for (const vm of models) {
+      const card = document.createElement("div");
+      card.className = "encoder-card";
+      const isDownloading = vm.status === "downloading";
+      const selectedProv = this.getVisionCardProvider(vm);
+      const isInstalledForProv = selectedProv === "nunchaku"
+        ? Boolean(vm.installed_local || vm.installed)
+        : selectedProv === "gguf"
+          ? Boolean(vm.installed_local)
+          : Boolean(vm.installed_ollama);
+      const anyInstalled = Boolean(vm.installed);
+
+      const statusBadge = isInstalledForProv
+        ? `<span class="badge-installed">✓ Установлен (${selectedProv === "ollama" ? "Ollama" : selectedProv === "gguf" ? "GGUF кэш" : "SVDQ"})</span>`
+        : anyInstalled
+          ? `<span class="badge-installed" style="background: rgba(16, 185, 129, 0.14); color: #34d399;">✓ Доступен (${vm.installed_ollama ? "Ollama" : "GGUF кэш"})</span>`
+          : isDownloading
+            ? `<span class="badge-installed" style="background: rgba(56, 189, 248, 0.16); color: #38bdf8;">⏳ ${Math.round(vm.progress || 0)}%</span>`
+            : `<span class="badge-missing">${escapeHtml(t("models.encoder_missing") || "Не скачан")}</span>`;
+
+      const sizeText = Number.isFinite(Number(vm.size_gb)) && Number(vm.size_gb) > 0
+        ? `${Number(vm.size_gb).toFixed(2).replace(/\.00$/, ".0")} GB`
+        : "";
+
+      const supported = Array.isArray(vm.supported_providers) && vm.supported_providers.length
+        ? vm.supported_providers
+        : (vm.provider === "nunchaku" ? ["nunchaku"] : ["ollama", "gguf"]);
+      const providerLabels = {
+        ollama: "🦙 Ollama (VLM Сервер)",
+        gguf: "📦 GGUF (HF Кэш / SD.CPP)",
+        nunchaku: "⚡ Nunchaku SVDQ INT4",
+      };
+      const providerSelectHtml = `<select class="vision-card-provider-select" data-vision-id="${escapeHtml(vm.id)}" onchange="App.onVisionCardProviderChange(this.dataset.visionId, this.value)" style="height: 24px; font-size: 11.5px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border); border-radius: 5px; padding: 0 6px; cursor: pointer;">
+        ${supported.map(p => `<option value="${escapeHtml(p)}" ${p === selectedProv ? "selected" : ""}>${escapeHtml(providerLabels[p] || p)}</option>`).join("")}
+      </select>`;
+
+      const caps = Array.isArray(vm.capabilities) ? vm.capabilities : [];
+      const usedTags = [];
+      if (caps.includes("flux3_pup")) usedTags.push("FLUX.3 Prompt Upsampler (✨ PUP)");
+      if (caps.includes("vision")) usedTags.push("Inpaint Помощник промпта (VLM)");
+      const usedByHtml = usedTags.length
+        ? `<div class="encoder-used-by">${usedTags.map(tag => `<span class="encoder-used-tag">${escapeHtml(tag)}</span>`).join("")}</div>`
+        : "";
+
+      const dlButtonText = isDownloading
+        ? `Скачивание (${Math.round(vm.progress || 0)}%)`
+        : selectedProv === "ollama"
+          ? `Скачать в Ollama${sizeText ? ` (${sizeText})` : ""}`
+          : selectedProv === "gguf"
+            ? `Скачать GGUF в кэш${sizeText ? ` (${sizeText})` : ""}`
+            : `Скачать веса SVDQ${sizeText ? ` (${sizeText})` : ""}`;
+
+      const actionBtn = isInstalledForProv
+        ? `<div class="variant-actions">
+             <span class="card-action-btn active" style="width: auto;">${ICON_CHECK} ${selectedProv === "ollama" ? "В Ollama" : "В кэше"}</span>
+             <button type="button" class="btn-delete-files encoder-delete-btn" data-vision-id="${escapeHtml(vm.id)}" onclick="App.deleteVisionModelFromHub(this.dataset.visionId, this)" title="Удалить веса модели">${ICON_TRASH}<span>${escapeHtml(t("models.component_delete") || "Удалить")}</span></button>
+           </div>`
+        : `<div class="variant-actions" style="display: flex; gap: 6px; width: 100%;">
+             <button type="button" class="btn-download encoder-download-btn" style="flex: 1;" data-vision-id="${escapeHtml(vm.id)}" data-vision-provider="${escapeHtml(selectedProv)}" ${isDownloading ? "disabled" : ""} onclick="App.downloadVisionModelFromHub(this.dataset.visionId, this, this.dataset.visionProvider)">${ICON_DOWNLOAD}<span>${escapeHtml(dlButtonText)}</span></button>
+             ${anyInstalled ? `<button type="button" class="btn-delete-files encoder-delete-btn" data-vision-id="${escapeHtml(vm.id)}" onclick="App.deleteVisionModelFromHub(this.dataset.visionId, this)" title="Удалить установленную копию">${ICON_TRASH}</button>` : ""}
+           </div>`;
+
+      card.innerHTML = `
+        <div>
+          <div class="encoder-card-header">
+            <span class="encoder-title">✨ ${escapeHtml(vm.name || vm.id)}</span>
+            ${statusBadge}
+          </div>
+          ${vm.description ? `<p style="font-size: 12px; color: var(--text-secondary); margin: 6px 0 8px; line-height: 1.4;">${escapeHtml(vm.description)}</p>` : ""}
+          <div class="encoder-meta">
+            <span>🏷 ID: <code>${escapeHtml(vm.id)}</code></span>
+            ${vm.primary_file ? `<span>📁 ${escapeHtml(t("models.encoder_file") || "Файл")}: <code>${escapeHtml(vm.primary_file)}</code></span>` : ""}
+            ${vm.repo_id ? `<span>🌐 ${escapeHtml(t("models.encoder_repo") || "Репозиторий")}: <code>${escapeHtml(vm.repo_id)}</code></span>` : ""}
+            <span style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px;">⚙ Провайдер: ${providerSelectHtml}<span>${sizeText ? `· ${sizeText}` : ""}${vm.vram_min_gb ? ` · VRAM ≥ ${vm.vram_min_gb} GB` : ""}</span></span>
+          </div>
+          ${usedByHtml}
+        </div>
+        <div style="margin-top: 12px;">
+          ${actionBtn}
+        </div>
+      `;
+      grid.appendChild(card);
+    }
+    return grid;
+  },
+
+  async renderVisionModelsTab(listEl) {
+    if (!listEl) return;
+    listEl.innerHTML = `<div class="placeholder-text">${escapeHtml(t("common.loading") || "Загрузка...")}</div>`;
+    try {
+      const data = await this.apiGet("/api/vision/models");
+      this.state.visionModels = Array.isArray(data?.models) ? data.models : [];
+      const query = (this.state.modelsTabSearch || "").trim().toLowerCase();
+      const filtered = this.state.visionModels.filter(vm => {
+        if (!query) return true;
+        return [vm.name, vm.id, vm.repo_id, vm.primary_file, vm.provider, vm.description]
+          .filter(Boolean)
+          .some(v => String(v).toLowerCase().includes(query));
+      });
+      if (!filtered.length) {
+        listEl.innerHTML = `<div class="placeholder-text" style="padding: 40px 0;">Модели Промпт / VLM не найдены</div>`;
+        return;
+      }
+      listEl.innerHTML = "";
+      listEl.appendChild(this.buildVisionModelsGrid(filtered));
+    } catch (err) {
+      listEl.innerHTML = `<div class="placeholder-text" style="color: #f87171;">${escapeHtml(t("status.error"))}: ${escapeHtml(err.message)}</div>`;
+    }
+  },
+
+  async downloadVisionModelFromHub(modelId, btnEl, provider = null) {
+    if (!modelId) return;
+    const vm = (this.state.visionModels || []).find(m => m.id === modelId);
+    const chosenProvider = provider || (vm ? this.getVisionCardProvider(vm) : null);
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.classList.add("is-loading");
+    }
+    try {
+      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {
+        provider: chosenProvider,
+      });
+      const vm = (this.state.visionModels || []).find(m => m.id === modelId);
+      const label = vm?.name || modelId;
+      this.toast("info", `Скачивание «${label}» добавлено в Загрузки...`);
+      if (res?.job_id && this.startDownloadPolling) {
+        this.startDownloadPolling(res.job_id, {
+          label: `VLM/PUP: ${label}`,
+          kind: "vision",
+          modelId,
+          repoId: vm?.repo_id || modelId,
+        });
+      }
+    } catch (err) {
+      this.toast("error", "Ошибка скачивания: " + (err.message || err));
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.classList.remove("is-loading");
+      }
+    }
+  },
+
+  async deleteVisionModelFromHub(modelId, btnEl) {
+    if (!modelId) return;
+    const vm = (this.state.visionModels || []).find(m => m.id === modelId);
+    const label = vm?.name || modelId;
+    if (!confirm(`Удалить веса модели «${label}» с диска?`)) return;
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.classList.add("is-loading");
+    }
+    try {
+      const res = await fetch(`/api/vision/models/${encodeURIComponent(modelId)}?confirm=true`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      this.toast("success", `Веса «${label}» удалены`);
+      this.state.visionModels = null;
+      await this.refreshConfig();
+      await this.renderModelsTab();
+      if (this.loadInpaintVisionModels) await this.loadInpaintVisionModels();
+    } catch (err) {
+      this.toast("error", "Ошибка удаления: " + (err.message || err));
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.classList.remove("is-loading");
+      }
+    }
+  },
+
+  openVisionModelsInHub() {
+    this.switchTab("models");
+    const chip = document.querySelector('#models-tab-filters [data-tab-filter="vision"]');
+    this.setModelsTabFilter("vision", chip);
   },
 
   async downloadSharedEncoder(repoId, filePath, teId, btnEl) {
@@ -2510,9 +2774,13 @@ const App = {
           clearInterval(interval);
           if (overlay) overlay.style.display = "none";
           this.toast("success", "Model files downloaded ✓");
-          // Refresh model/encoder metadata so the Models Hub flips to "Installed".
+          // Refresh model/encoder/vision metadata so the Models Hub flips to "Installed".
           this.state.encoders = null;
+          this.state.visionModels = null;
           await this.refreshConfig();
+          if (this.loadInpaintVisionModels) {
+            try { await this.loadInpaintVisionModels(); } catch (_) {}
+          }
         } else if (status.status === "error") {
           clearInterval(interval);
           if (overlay) overlay.style.display = "none";
@@ -6950,6 +7218,81 @@ const App = {
       this.toast("error", e.message);
     }
   },
+
+  renderOllamaEngineStatus() {
+    const o = this.state.ollama;
+    const badge = document.getElementById("setting-ollama-status");
+    const installBtn = document.getElementById("btn-install-ollama");
+    const startBtn = document.getElementById("btn-start-ollama");
+    const stopBtn = document.getElementById("btn-stop-ollama");
+    if (!badge) return;
+
+    if (!o || !o.installed) {
+      badge.innerHTML = `<span class="state-badge missing">Не установлен</span>`;
+      if (installBtn) installBtn.style.display = "inline-flex";
+      if (startBtn) startBtn.style.display = "none";
+      if (stopBtn) stopBtn.style.display = "none";
+    } else if (o.running) {
+      const qwenBadge = o.has_qwen_vl ? " · Qwen2.5-VL ✓" : "";
+      const modelsCount = (o.models || []).length;
+      badge.innerHTML = `<span class="state-badge installed">✓ Работает (v${escapeHtml(o.version || '0.40')}, моделей: ${modelsCount}${qwenBadge})</span>`;
+      if (installBtn) installBtn.style.display = "none";
+      if (startBtn) startBtn.style.display = "none";
+      if (stopBtn) stopBtn.style.display = "inline-flex";
+    } else {
+      badge.innerHTML = `<span class="state-badge missing" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);">⏸ Остановлен (v${escapeHtml(o.version || '0.40')})</span>`;
+      if (installBtn) installBtn.style.display = "none";
+      if (startBtn) { startBtn.style.display = "inline-flex"; startBtn.textContent = "Запустить"; }
+      if (stopBtn) stopBtn.style.display = "none";
+    }
+  },
+
+  async startOllama(btnEl) {
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Запуск..."; }
+    try {
+      this.toast("info", "Запуск Ollama daemon...");
+      const res = await this.apiPost("/api/engine/ollama/start");
+      if (res.running) {
+        this.toast("success", "✓ Ollama успешно запущена на порту 11434");
+      } else {
+        this.toast("error", "Не удалось запустить Ollama");
+      }
+      await this.refreshConfig();
+      if (this.loadInpaintVisionModels) await this.loadInpaintVisionModels();
+    } catch (e) {
+      this.toast("error", "Ошибка запуска Ollama: " + e.message);
+    } finally {
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = "Запустить"; }
+    }
+  },
+
+  async stopOllama(btnEl) {
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Остановка..."; }
+    try {
+      await this.apiPost("/api/engine/ollama/stop");
+      this.toast("info", "Ollama остановлена");
+      await this.refreshConfig();
+      if (this.loadInpaintVisionModels) await this.loadInpaintVisionModels();
+    } catch (e) {
+      this.toast("error", "Ошибка: " + e.message);
+    } finally {
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = "Остановить"; }
+    }
+  },
+
+  async installOllama(btnEl) {
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Установка..."; }
+    try {
+      this.toast("info", "Загрузка и установка Ollama (~1.5 GB)...");
+      const res = await this.apiPost("/api/engine/download", { engine: "ollama" });
+      this.toast("success", res.message || "Ollama установлена ✓");
+      await this.startOllama();
+    } catch (e) {
+      this.toast("error", "Ошибка установки Ollama: " + e.message);
+    } finally {
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = "Установить"; }
+    }
+  },
 };
 
 // Global handlers for inline HTML onclick attributes
@@ -7023,13 +7366,23 @@ function initAllViewportZoomPan(appRef = null) {
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
       spacePressed = true;
+      window.spacePressed = true;
+      document.querySelectorAll(".preview-area, .studio-canvas-area").forEach(el => el.classList.add("space-held"));
     }
   });
 
   window.addEventListener("keyup", (e) => {
     if (e.code === "Space") {
       spacePressed = false;
+      window.spacePressed = false;
+      document.querySelectorAll(".preview-area, .studio-canvas-area").forEach(el => el.classList.remove("space-held"));
     }
+  });
+
+  window.addEventListener("blur", () => {
+    spacePressed = false;
+    window.spacePressed = false;
+    document.querySelectorAll(".preview-area, .studio-canvas-area").forEach(el => el.classList.remove("space-held"));
   });
 }
 
@@ -7258,14 +7611,10 @@ function getViewportPanBounds(vp) {
   const cw = baseW * vp.zoom;
   const ch = baseH * vp.zoom;
 
-  const marginX = Math.min(vw, baseW) * 0.28;
-  const marginY = Math.min(vh, baseH) * 0.28;
-  const maxPanX = vp.zoom <= 1.0
-    ? marginX * 0.5
-    : Math.max(marginX * 0.5, (cw - vw) * 0.5 + marginX);
-  const maxPanY = vp.zoom <= 1.0
-    ? marginY * 0.5
-    : Math.max(marginY * 0.5, (ch - vh) * 0.5 + marginY);
+  const marginX = Math.max(vw, cw) * 0.75;
+  const marginY = Math.max(vh, ch) * 0.75;
+  const maxPanX = Math.max(marginX * 0.5, (cw - vw) * 0.5 + marginX);
+  const maxPanY = Math.max(marginY * 0.5, (ch - vh) * 0.5 + marginY);
 
   return { vw, vh, baseW, baseH, cw, ch, maxPanX, maxPanY };
 }
@@ -12023,7 +12372,7 @@ Object.assign(App, {
       let painting = false;
 
       canvas.addEventListener("pointerdown", (event) => {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || window.spacePressed) return;
         const st = this.getGenMaskState();
         if (!st?.enabled) return;
         const surface = this.ensureGenMaskSurface();
@@ -12140,7 +12489,7 @@ Object.assign(App, {
     return state.layers.find((l) => l.id === id) || null;
   },
 
-  createInpaintMaskLayer(state, name) {
+  createInpaintMaskLayer(state, name, id = null) {
     const width = state.source?.width || 1024;
     const height = state.source?.height || 1024;
 
@@ -12152,12 +12501,16 @@ Object.assign(App, {
     viewCanvas.width = width;
     viewCanvas.height = height;
     viewCanvas.className = "inpaint-mask-canvas";
-    viewCanvas.dataset.layerId = "";
 
-    const surface = this.createMaskSurface(dataCanvas, { visualCanvas: viewCanvas });
+    const surface = this.createMaskSurface(dataCanvas, {
+      visualCanvas: viewCanvas,
+      brushSize: state?.brushSize || 64,
+      softness: state?.softness ?? 0.5,
+      mode: state?.mode || "brush",
+    });
 
     const layer = {
-      id: `mask_${Date.now().toString(36)}_${(this._inpaintLayerSeq = (this._inpaintLayerSeq || 0) + 1).toString(36)}`,
+      id: id || `mask_${Date.now().toString(36)}_${(this._inpaintLayerSeq = (this._inpaintLayerSeq || 0) + 1).toString(36)}`,
       type: "mask",
       name: name || this.maskT("inpaint.layer.mask", "Маска"),
       visible: true,
@@ -12298,10 +12651,16 @@ Object.assign(App, {
           url: source.url,
         });
       } else if (saved.type === "mask") {
-        const layer = this.createInpaintMaskLayer(state, saved.name);
+        const layer = this.createInpaintMaskLayer(state, saved.name, saved.id);
         layer.id = saved.id;
+        if (layer.viewCanvas) layer.viewCanvas.dataset.layerId = saved.id;
         layer.visible = saved.visible;
         layer.opacity = saved.opacity;
+        if (layer.surface) {
+          layer.surface.mode = state.mode || "brush";
+          layer.surface.brushSize = state.brushSize || 64;
+          layer.surface.softness = state.softness ?? 0.5;
+        }
         if (saved.maskDataUrl) await layer.surface.loadDataURL(saved.maskDataUrl);
         this.attachInpaintMaskLayerView(layer);
         restored.push(layer);
@@ -12341,13 +12700,23 @@ Object.assign(App, {
 
     state.layers = restored;
     state.activeLayerId = snapshot.activeLayerId;
-    if (!this.getInpaintLayerById(state.activeLayerId)) {
+    const curActive = this.getInpaintLayerById(state.activeLayerId);
+    if (!curActive || curActive.type !== "mask") {
       const fallback = state.layers.find((l) => l.type === "mask") || state.layers[0] || null;
       state.activeLayerId = fallback ? fallback.id : null;
+    }
+    const curMask = this.getInpaintActiveMaskLayer();
+    if (curMask && curMask.surface) {
+      curMask.surface.mode = state.mode || "brush";
+      curMask.surface.brushSize = state.brushSize || 64;
+      curMask.surface.softness = state.softness ?? 0.5;
     }
     this.refreshInpaintMaskLayerViews();
     this.renderInpaintComposite();
     this.renderInpaintLayersUI();
+    this.syncInpaintGeometry();
+    this.updateInpaintStatus();
+    this.updateInpaintBrushCursor();
   },
 
   undoInpaint() {
@@ -13200,6 +13569,10 @@ Object.assign(App, {
 
     if (hintEl) hintEl.style.display = state.source ? "none" : "flex";
     if (clearBtn) clearBtn.disabled = !state.source;
+    const promptBtn = document.getElementById("inpaint-generate-prompt-btn");
+    if (promptBtn && !state.generatingPrompt) {
+      promptBtn.disabled = !(state.source && layer && layer.surface && !layer.surface.isEmpty());
+    }
 
     if (!statusEl) return;
     if (!state.source) {
@@ -13259,13 +13632,13 @@ Object.assign(App, {
 
     const layerFromEvent = (event) => {
       const el = event.target.closest?.(".inpaint-mask-canvas");
-      if (!el) return null;
+      if (!el) return this.getInpaintActiveMaskLayer();
       const id = el.dataset.layerId;
-      return id ? this.getInpaintLayerById(id) : null;
+      return (id ? this.getInpaintLayerById(id) : null) || this.getInpaintActiveMaskLayer();
     };
 
     stack.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 || window.spacePressed) return;
       const layer = layerFromEvent(event);
       if (!layer || layer.type !== "mask") return;
       event.preventDefault();
@@ -13281,10 +13654,10 @@ Object.assign(App, {
     });
 
     stack.addEventListener("pointermove", (event) => {
-      const layer = layerFromEvent(event);
+      const layer = layerFromEvent(event) || this.getInpaintActiveMaskLayer();
       if (!layer) return;
       const point = this.pointerToCanvasPoint(layer.viewCanvas, event);
-      if (point) layer.surface.continueStroke(point.x, point.y);
+      if (point && painting) layer.surface.continueStroke(point.x, point.y);
       this.updateInpaintBrushCursor();
       const cursor = document.getElementById("inpaint-brush-cursor");
       if (cursor) {
@@ -13865,6 +14238,312 @@ Object.assign(App, {
     if (isCustom) customInput.focus();
   },
 
+  async loadInpaintVisionModels() {
+    const state = this.getInpaintState();
+    if (!state) return;
+    try {
+      const data = await this.apiGet("/api/vision/models");
+      state.visionModels = Array.isArray(data?.models) ? data.models : [];
+      state.ollamaAvailable = Boolean(data?.available);
+      this.renderInpaintVisionModels();
+    } catch (e) {
+      console.warn("[inpaint] Failed to load vision models:", e);
+      state.visionModels = [];
+      state.ollamaAvailable = false;
+      this.renderInpaintVisionModels();
+    }
+  },
+
+  onInpaintVisionProviderChange(provider) {
+    const prov = provider || "auto";
+    try { localStorage.setItem("lazysd_inpaint_vision_provider", prov); } catch (_) {}
+    this.renderInpaintVisionModels();
+  },
+
+  renderInpaintVisionModels() {
+    const state = this.getInpaintState();
+    const select = document.getElementById("inpaint-vision-model-select");
+    const provSelect = document.getElementById("inpaint-vision-provider-select");
+    if (!state || !select) return;
+
+    let savedProv = "auto";
+    try { savedProv = localStorage.getItem("lazysd_inpaint_vision_provider") || "auto"; } catch (_) {}
+    if (provSelect && !state._visionProvInit) {
+      if ([...provSelect.options].some(o => o.value === savedProv)) {
+        provSelect.value = savedProv;
+      }
+      state._visionProvInit = true;
+    }
+    const activeProv = provSelect?.value || savedProv || "auto";
+
+    let savedModel = "";
+    try { savedModel = localStorage.getItem("lazysd_inpaint_vision_model") || ""; } catch (_) {}
+    // The <select> only holds the placeholder "heuristic" option on first render, so it must not
+    // override the saved choice / auto-pick of an installed model.
+    const prevValue = state._visionRendered
+      ? (select.value || savedModel)
+      : (savedModel || this.state?.settings?.vision_model || "");
+
+    select.innerHTML = "";
+    const allModels = Array.isArray(state.visionModels) ? state.visionModels : [];
+    const models = activeProv === "heuristic"
+      ? []
+      : allModels.filter(m => {
+          if (activeProv === "auto") return true;
+          const sup = Array.isArray(m.supported_providers) && m.supported_providers.length
+            ? m.supported_providers
+            : [m.provider];
+          if (activeProv === "gguf") return m.provider === "gguf" || sup.includes("gguf");
+          return m.provider === activeProv || sup.includes(activeProv);
+        });
+
+    for (const m of models) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      const mark = m.installed ? "✓" : (m.status === "downloading" ? "⏳" : "⬇");
+      opt.textContent = `${mark} ${m.name} (${m.size_gb} GB)`;
+      opt.title = m.description || m.id;
+      select.appendChild(opt);
+    }
+
+    const heurOpt = document.createElement("option");
+    heurOpt.value = "heuristic";
+    heurOpt.textContent = state.ollamaAvailable
+      ? this.maskT("inpaint.assistant.heuristic_only", "Эвристика (без VLM)")
+      : this.maskT("inpaint.assistant.ollama_offline", "Ollama не запущена (эвристика)");
+    select.appendChild(heurOpt);
+
+    if (activeProv === "heuristic") {
+      select.value = "heuristic";
+    } else {
+      const prevEntry = models.find((m) => m.id === prevValue);
+      const prevUsable = prevValue === "heuristic" || (prevEntry && prevEntry.installed);
+      if (prevValue && prevValue !== "heuristic" && [...select.options].some((o) => o.value === prevValue) && (prevUsable || state._visionRendered)) {
+        select.value = prevValue;
+      } else {
+        const installed = models.find((m) => m.installed);
+        const recommended = models.find((m) => m.recommended);
+        select.value = (installed || recommended)?.id || "heuristic";
+      }
+    }
+    state._visionRendered = true;
+    this.onInpaintVisionModelChange();
+  },
+
+  onInpaintVisionModelChange() {
+    const state = this.getInpaintState();
+    const select = document.getElementById("inpaint-vision-model-select");
+    const dlBtn = document.getElementById("inpaint-vision-download-btn");
+    const delBtn = document.getElementById("inpaint-vision-delete-btn");
+    if (!state || !select) return;
+
+    const val = select.value;
+    try { localStorage.setItem("lazysd_inpaint_vision_model", val); } catch (_) {}
+
+    const entry = (state.visionModels || []).find((m) => m.id === val);
+    const canDownload = Boolean(entry && !entry.installed && entry.status !== "downloading" && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
+    const canDelete = Boolean(entry && entry.installed && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
+    if (dlBtn) dlBtn.style.display = canDownload ? "inline-flex" : "none";
+    if (delBtn) delBtn.style.display = canDelete ? "inline-flex" : "none";
+  },
+
+  async downloadInpaintVisionModel() {
+    const state = this.getInpaintState();
+    const select = document.getElementById("inpaint-vision-model-select");
+    const badge = document.getElementById("inpaint-prompt-source-badge");
+    if (!state || !select || !select.value || select.value === "heuristic") return;
+
+    const modelId = select.value;
+    try {
+      if (badge) {
+        badge.style.display = "inline-block";
+        badge.textContent = "⏳ 0%";
+      }
+      const provSelect = document.getElementById("inpaint-vision-provider-select");
+      const chosenProv = (provSelect?.value && provSelect.value !== "auto" && provSelect.value !== "heuristic")
+        ? provSelect.value
+        : null;
+      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {
+        provider: chosenProv,
+      });
+      const entry = (state.visionModels || []).find((m) => m.id === modelId);
+      if (res?.job_id && this.startDownloadPolling) {
+        this.startDownloadPolling(res.job_id, {
+          label: `VLM/PUP: ${entry?.name || modelId}`,
+          kind: "vision",
+          modelId,
+          repoId: entry?.repo_id || modelId,
+        });
+      }
+      this.toast("info", `Загрузка ${entry?.name || modelId} запущена (см. Хаб → Загрузки)...`);
+      for (let i = 0; i < 300; i += 1) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const data = await this.apiGet("/api/vision/models");
+        state.visionModels = Array.isArray(data?.models) ? data.models : [];
+        const cur = state.visionModels.find((m) => m.id === modelId);
+        if (!cur) break;
+        if (cur.status === "downloading") {
+          if (badge) {
+            badge.style.display = "inline-block";
+            badge.textContent = `⏳ ${Math.round(cur.progress || 0)}%`;
+          }
+        } else if (cur.installed || cur.status === "installed") {
+          if (badge) badge.textContent = "✓ VLM";
+          this.toast("success", `Модель ${cur.name || modelId} установлена`);
+          break;
+        } else if (cur.status === "error") {
+          if (badge) badge.style.display = "none";
+          this.toast("error", cur.error || "Ошибка скачивания vision-модели");
+          break;
+        }
+      }
+      this.renderInpaintVisionModels();
+    } catch (e) {
+      if (badge) badge.style.display = "none";
+      this.toast("error", e.message || "Не удалось скачать vision-модель");
+    }
+  },
+
+  async deleteInpaintVisionModel() {
+    const select = document.getElementById("inpaint-vision-model-select");
+    if (!select || !select.value || select.value === "heuristic") return;
+    const modelId = select.value;
+    try {
+      const res = await fetch(`/api/vision/models/${encodeURIComponent(modelId)}?confirm=true`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      this.toast("info", `Модель ${modelId} удалена`);
+      await this.loadInpaintVisionModels();
+    } catch (e) {
+      this.toast("error", e.message || "Ошибка удаления модели");
+    }
+  },
+
+  async upsampleGeneratePrompt() {
+    const promptEl = document.getElementById("prompt-input");
+    const btn = document.getElementById("dock-pup-btn");
+    if (!promptEl) return;
+    const raw = (promptEl.value || "").trim();
+    if (!raw) {
+      this.toast("warning", "Введите краткий промпт для развёртывания (FLUX.3 PUP)");
+      promptEl.focus();
+      return;
+    }
+    const visionSelect = document.getElementById("inpaint-vision-model-select");
+    const selectedVision = visionSelect?.value && visionSelect.value !== "heuristic"
+      ? visionSelect.value
+      : null;
+    const width = parseInt(document.getElementById("width-input")?.value || "1024", 10) || 1024;
+    const height = parseInt(document.getElementById("height-input")?.value || "1024", 10) || 1024;
+    const refPath = this.state?.img2imgRef?.path || null;
+
+    if (btn) btn.disabled = true;
+    try {
+      const res = await this.apiPost("/api/prompt/upsample", {
+        prompt: raw,
+        width,
+        height,
+        init_image_path: refPath,
+        vision_model: selectedVision,
+      });
+      if (res?.prompt) {
+        promptEl.value = res.prompt;
+        if (this.autoResizePrompt) this.autoResizePrompt(promptEl);
+        this.toast("success", `Промпт развёрнут (${res.model || res.source || "FLUX.3 PUP"})`);
+      }
+      if (Array.isArray(res?.warnings) && res.warnings.length) {
+        this.toast("info", res.warnings[0]);
+      }
+    } catch (e) {
+      this.toast("error", e.message || "Ошибка FLUX.3 Prompt Upsampler");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  },
+
+  async generateInpaintPrompt() {
+    const state = this.getInpaintState();
+    if (!state || state.generatingPrompt) return;
+    if (!state.source) {
+      this.toast("warning", this.maskT("inpaint.hint.no_source", "Сначала загрузите изображение"));
+      return;
+    }
+    const maskLayer = this.getInpaintActiveMaskLayer();
+    if (!maskLayer || maskLayer.surface.isEmpty()) {
+      this.toast("warning", this.maskT("inpaint.hint.empty_mask", "Нарисуйте маску перед генерацией"));
+      return;
+    }
+
+    const instrEl = document.getElementById("inpaint-instruction");
+    const instruction = (instrEl?.value || "").trim();
+    try { localStorage.setItem("lazysd_inpaint_instruction", instruction); } catch (_) {}
+
+    const provSelect = document.getElementById("inpaint-vision-provider-select");
+    const selectedProvider = provSelect?.value || "auto";
+    const visionSelect = document.getElementById("inpaint-vision-model-select");
+    const selectedVision = visionSelect?.value || "qwen2.5vl:3b";
+    const useVlm = selectedVision !== "heuristic" && selectedProvider !== "heuristic";
+    const crop = this.getInpaintCropState() || { mode: "auto", padding: 64, box: null };
+
+    const btn = document.getElementById("inpaint-generate-prompt-btn");
+    const badge = document.getElementById("inpaint-prompt-source-badge");
+    state.generatingPrompt = true;
+    if (btn) btn.disabled = true;
+    if (badge) {
+      badge.style.display = "inline-block";
+      badge.textContent = this.maskT("inpaint.assistant.generating", "Анализ области...");
+    }
+
+    try {
+      const res = await this.apiPost("/api/inpaint/prompt", {
+        source_path: state.source.path,
+        mask: maskLayer.surface.toDataURL(),
+        instruction,
+        crop_mode: crop.mode || "auto",
+        crop_box: crop.mode === "manual" ? crop.box : null,
+        crop_padding: Math.max(0, Math.min(512, parseInt(crop.padding, 10) || 64)),
+        vision_model: useVlm ? selectedVision : null,
+        vision_provider: selectedProvider,
+        use_vlm: useVlm,
+      });
+
+      const promptEl = document.getElementById("inpaint-prompt");
+      const negEl = document.getElementById("inpaint-negative-prompt");
+      if (promptEl && res?.prompt) {
+        promptEl.value = res.prompt;
+        try { localStorage.setItem("lazysd_inpaint_prompt", res.prompt); } catch (_) {}
+      }
+      if (negEl && res?.negative_prompt) {
+        negEl.value = res.negative_prompt;
+        try { localStorage.setItem("lazysd_inpaint_negative_prompt", res.negative_prompt); } catch (_) {}
+      }
+
+      if (badge) {
+        badge.style.display = "inline-block";
+        const srcLabel = res?.source === "vlm"
+          ? `${this.maskT("inpaint.assistant.source_vlm", "VLM")}${res.model ? ` · ${res.model}` : ""}`
+          : this.maskT("inpaint.assistant.source_heuristic", "эвристика");
+        badge.textContent = res?.cached
+          ? `${srcLabel} (${this.maskT("inpaint.assistant.source_cached", "кэш")})`
+          : srcLabel;
+        badge.title = Array.isArray(res?.warnings) && res.warnings.length
+          ? res.warnings.join("; ")
+          : "";
+      }
+      if (Array.isArray(res?.warnings) && res.warnings.length) {
+        this.toast("info", res.warnings[0]);
+      }
+    } catch (e) {
+      if (badge) badge.style.display = "none";
+      this.toast("error", e.message || "Ошибка генерации промпта");
+    } finally {
+      state.generatingPrompt = false;
+      this.updateInpaintStatus();
+    }
+  },
+
   onInpaintVaeChange() {
     const select = document.getElementById("inpaint-vae-select");
     const customInput = document.getElementById("inpaint-custom-vae-input");
@@ -13912,6 +14591,18 @@ Object.assign(App, {
     this.initInpaintMaskEvents();
     this.initInpaintCropEvents();
     this.renderInpaintModels();
+    this.loadInpaintVisionModels();
+    const instrEl = document.getElementById("inpaint-instruction");
+    if (instrEl && !instrEl.dataset.bound) {
+      instrEl.dataset.bound = "1";
+      try {
+        const savedInstr = localStorage.getItem("lazysd_inpaint_instruction");
+        if (savedInstr && !instrEl.value) instrEl.value = savedInstr;
+      } catch (_) {}
+      instrEl.addEventListener("input", () => {
+        try { localStorage.setItem("lazysd_inpaint_instruction", instrEl.value); } catch (_) {}
+      });
+    }
     const modelSelect = document.getElementById("inpaint-model-select");
     // Seed steps/CFG + quantization/text-encoder lists once per page load.
     // Later tab switches must keep whatever the user typed in the panel.

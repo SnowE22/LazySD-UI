@@ -90,7 +90,7 @@ function layerById(state, id) {
 }
 
 // ---------- mask layer plumbing ----------
-function createMaskLayer(state, name) {
+function createMaskLayer(state, name, id = null) {
   const width = state.source?.width || 1024;
   const height = state.source?.height || 1024;
 
@@ -102,12 +102,16 @@ function createMaskLayer(state, name) {
   viewCanvas.width = width;
   viewCanvas.height = height;
   viewCanvas.className = "inpaint-mask-canvas";
-  viewCanvas.dataset.layerId = "";
 
-  const surface = createMaskSurface(dataCanvas, { visualCanvas: viewCanvas });
+  const surface = createMaskSurface(dataCanvas, {
+    visualCanvas: viewCanvas,
+    brushSize: state?.brushSize || MASK_DEFAULT_BRUSH_SIZE,
+    softness: state?.softness ?? 0.5,
+    mode: state?.mode || "brush",
+  });
 
   const layer = {
-    id: nextLayerId("mask"),
+    id: id || nextLayerId("mask"),
     type: "mask",
     name: name || t("inpaint.layer.mask", "Маска"),
     visible: true,
@@ -252,10 +256,16 @@ async function restoreSnapshot(app, snapshot) {
         url: source.url,
       });
     } else if (saved.type === "mask") {
-      const layer = createMaskLayer(state, saved.name);
+      const layer = createMaskLayer(state, saved.name, saved.id);
       layer.id = saved.id;
+      if (layer.viewCanvas) layer.viewCanvas.dataset.layerId = saved.id;
       layer.visible = saved.visible;
       layer.opacity = saved.opacity;
+      if (layer.surface) {
+        layer.surface.mode = state.mode || "brush";
+        layer.surface.brushSize = state.brushSize || MASK_DEFAULT_BRUSH_SIZE;
+        layer.surface.softness = state.softness ?? 0.5;
+      }
       if (saved.maskDataUrl) await layer.surface.loadDataURL(saved.maskDataUrl);
       attachMaskLayerView(app, layer);
       restored.push(layer);
@@ -295,13 +305,23 @@ async function restoreSnapshot(app, snapshot) {
 
   state.layers = restored;
   state.activeLayerId = snapshot.activeLayerId;
-  if (!layerById(state, state.activeLayerId)) {
+  const curActive = layerById(state, state.activeLayerId);
+  if (!curActive || curActive.type !== "mask") {
     const fallback = state.layers.find((l) => l.type === "mask") || state.layers[0] || null;
     state.activeLayerId = fallback ? fallback.id : null;
+  }
+  const curMask = activeMaskLayer(state);
+  if (curMask && curMask.surface) {
+    curMask.surface.mode = state.mode || "brush";
+    curMask.surface.brushSize = state.brushSize || MASK_DEFAULT_BRUSH_SIZE;
+    curMask.surface.softness = state.softness ?? 0.5;
   }
   refreshMaskLayerViews(app);
   renderInpaintComposite(app);
   renderInpaintLayersUI(app);
+  syncInpaintGeometry(app);
+  updateInpaintStatus(app);
+  updateBrushCursor(app);
 }
 
 export function undoInpaint(appRef = null) {
@@ -1149,6 +1169,10 @@ export function updateInpaintStatus(appRef = null) {
 
   if (hintEl) hintEl.style.display = state.source ? "none" : "flex";
   if (clearBtn) clearBtn.disabled = !state.source;
+  const promptBtn = document.getElementById("inpaint-generate-prompt-btn");
+  if (promptBtn && !state.generatingPrompt) {
+    promptBtn.disabled = !(state.source && layer && layer.surface && !layer.surface.isEmpty());
+  }
 
   if (!statusEl) return;
   if (!state.source) {
@@ -1211,13 +1235,13 @@ export function initInpaintMaskEvents(appRef = null) {
 
   const layerFromEvent = (event) => {
     const el = event.target.closest?.(".inpaint-mask-canvas");
-    if (!el) return null;
+    if (!el) return activeMaskLayer(state);
     const id = el.dataset.layerId;
-    return id ? layerById(state, id) : null;
+    return (id ? layerById(state, id) : null) || activeMaskLayer(state);
   };
 
   stack.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || window.spacePressed) return;
     const layer = layerFromEvent(event);
     if (!layer || layer.type !== "mask") return;
     event.preventDefault();
@@ -1233,10 +1257,10 @@ export function initInpaintMaskEvents(appRef = null) {
   });
 
   stack.addEventListener("pointermove", (event) => {
-    const layer = layerFromEvent(event);
+    const layer = layerFromEvent(event) || activeMaskLayer(state);
     if (layer) {
       const point = pointerToCanvasPoint(layer.viewCanvas, event);
-      if (point) {
+      if (point && painting) {
         layer.surface.continueStroke(point.x, point.y);
       }
       updateBrushCursor(app);
@@ -1826,6 +1850,264 @@ export function onInpaintTextEncoderChange() {
   if (isCustom) customInput.focus();
 }
 
+// ---------- prompt assistant (VLM + heuristic fallback) ----------
+export async function loadInpaintVisionModels(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!state) return;
+  try {
+    const data = await apiGet("/api/vision/models");
+    state.visionModels = Array.isArray(data?.models) ? data.models : [];
+    state.ollamaAvailable = Boolean(data?.available);
+    renderInpaintVisionModels(app);
+  } catch (e) {
+    console.warn("[inpaint] Failed to load vision models:", e);
+    state.visionModels = [];
+    state.ollamaAvailable = false;
+    renderInpaintVisionModels(app);
+  }
+}
+
+export function renderInpaintVisionModels(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  const select = document.getElementById("inpaint-vision-model-select");
+  if (!state || !select) return;
+
+  let savedModel = "";
+  try { savedModel = localStorage.getItem("lazysd_inpaint_vision_model") || ""; } catch (_) {}
+  const prevValue = select.value || savedModel || app?.state?.settings?.vision_model || "qwen2.5vl:3b";
+
+  select.innerHTML = "";
+  const models = Array.isArray(state.visionModels) ? state.visionModels : [];
+  for (const m of models) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    const mark = m.installed ? "✓" : (m.status === "downloading" ? "⏳" : "⬇");
+    opt.textContent = `${mark} ${m.name} (${m.size_gb} GB)`;
+    opt.title = m.description || m.id;
+    select.appendChild(opt);
+  }
+
+  const heurOpt = document.createElement("option");
+  heurOpt.value = "heuristic";
+  heurOpt.textContent = state.ollamaAvailable
+    ? t("inpaint.assistant.heuristic_only", "Эвристика (без VLM)")
+    : t("inpaint.assistant.ollama_offline", "Ollama не запущена (эвристика)");
+  select.appendChild(heurOpt);
+
+  if ([...select.options].some((o) => o.value === prevValue)) {
+    select.value = prevValue;
+  } else {
+    const installed = models.find((m) => m.installed);
+    const recommended = models.find((m) => m.recommended);
+    select.value = (installed || recommended)?.id || "heuristic";
+  }
+  onInpaintVisionModelChange(app);
+}
+
+export function onInpaintVisionModelChange(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  const select = document.getElementById("inpaint-vision-model-select");
+  const dlBtn = document.getElementById("inpaint-vision-download-btn");
+  const delBtn = document.getElementById("inpaint-vision-delete-btn");
+  if (!state || !select) return;
+
+  const val = select.value;
+  try { localStorage.setItem("lazysd_inpaint_vision_model", val); } catch (_) {}
+
+  const entry = (state.visionModels || []).find((m) => m.id === val);
+  const canDownload = Boolean(entry && !entry.installed && entry.status !== "downloading" && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
+  const canDelete = Boolean(entry && entry.installed && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
+  if (dlBtn) dlBtn.style.display = canDownload ? "inline-flex" : "none";
+  if (delBtn) delBtn.style.display = canDelete ? "inline-flex" : "none";
+}
+
+export async function downloadInpaintVisionModel(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  const select = document.getElementById("inpaint-vision-model-select");
+  const badge = document.getElementById("inpaint-prompt-source-badge");
+  if (!state || !select || !select.value || select.value === "heuristic") return;
+
+  const modelId = select.value;
+  try {
+    if (badge) {
+      badge.style.display = "inline-block";
+      badge.textContent = "⏳ 0%";
+    }
+    await apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {});
+    toast("info", `Загрузка ${modelId} запущена...`);
+    // Poll vision models status until download finishes
+    for (let i = 0; i < 300; i += 1) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const data = await apiGet("/api/vision/models");
+      state.visionModels = Array.isArray(data?.models) ? data.models : [];
+      const cur = state.visionModels.find((m) => m.id === modelId);
+      if (!cur) break;
+      if (cur.status === "downloading") {
+        if (badge) {
+          badge.style.display = "inline-block";
+          badge.textContent = `⏳ ${Math.round(cur.progress || 0)}%`;
+        }
+      } else if (cur.installed || cur.status === "installed") {
+        if (badge) badge.textContent = "✓ VLM";
+        toast("success", `Модель ${cur.name || modelId} установлена`);
+        break;
+      } else if (cur.status === "error") {
+        if (badge) badge.style.display = "none";
+        toast("error", cur.error || "Ошибка скачивания vision-модели");
+        break;
+      }
+    }
+    renderInpaintVisionModels(app);
+  } catch (e) {
+    if (badge) badge.style.display = "none";
+    toast("error", e.message || "Не удалось скачать vision-модель");
+  }
+}
+
+export async function deleteInpaintVisionModel(appRef = null) {
+  const app = appRef || window.App;
+  const select = document.getElementById("inpaint-vision-model-select");
+  if (!select || !select.value || select.value === "heuristic") return;
+  const modelId = select.value;
+  try {
+    const res = await fetch(`/api/vision/models/${encodeURIComponent(modelId)}?confirm=true`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    toast("info", `Модель ${modelId} удалена`);
+    await loadInpaintVisionModels(app);
+  } catch (e) {
+    toast("error", e.message || "Ошибка удаления модели");
+  }
+}
+
+export async function upsampleGeneratePrompt(appRef = null) {
+  const app = appRef || window.App;
+  const promptEl = document.getElementById("prompt-input");
+  const btn = document.getElementById("dock-pup-btn");
+  if (!app || !promptEl) return;
+  const raw = (promptEl.value || "").trim();
+  if (!raw) {
+    toast("warning", "Введите краткий промпт для развёртывания (FLUX.3 PUP)");
+    promptEl.focus();
+    return;
+  }
+  const visionSelect = document.getElementById("inpaint-vision-model-select");
+  const selectedVision = visionSelect?.value && visionSelect.value !== "heuristic"
+    ? visionSelect.value
+    : null;
+  const width = parseInt(document.getElementById("width-input")?.value || "1024", 10) || 1024;
+  const height = parseInt(document.getElementById("height-input")?.value || "1024", 10) || 1024;
+  const refPath = app.state?.img2imgRef?.path || null;
+
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiPost("/api/prompt/upsample", {
+      prompt: raw,
+      width,
+      height,
+      init_image_path: refPath,
+      vision_model: selectedVision,
+    });
+    if (res?.prompt) {
+      promptEl.value = res.prompt;
+      if (app.autoResizePrompt) app.autoResizePrompt(promptEl);
+      toast("success", `Промпт развёрнут (${res.model || res.source || "FLUX.3 PUP"})`);
+    }
+    if (Array.isArray(res?.warnings) && res.warnings.length) {
+      toast("info", res.warnings[0]);
+    }
+  } catch (e) {
+    toast("error", e.message || "Ошибка FLUX.3 Prompt Upsampler");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+export async function generateInpaintPrompt(appRef = null) {
+  const app = appRef || window.App;
+  const state = getInpaintState(app);
+  if (!app || !state || state.generatingPrompt) return;
+  if (!state.source) {
+    toast("warning", t("inpaint.hint.no_source", "Сначала загрузите изображение"));
+    return;
+  }
+  const maskLayer = activeMaskLayer(state);
+  if (!maskLayer || maskLayer.surface.isEmpty()) {
+    toast("warning", t("inpaint.hint.empty_mask", "Нарисуйте маску перед генерацией"));
+    return;
+  }
+
+  const instrEl = document.getElementById("inpaint-instruction");
+  const instruction = (instrEl?.value || "").trim();
+  try { localStorage.setItem("lazysd_inpaint_instruction", instruction); } catch (_) {}
+
+  const visionSelect = document.getElementById("inpaint-vision-model-select");
+  const selectedVision = visionSelect?.value || "qwen2.5vl:3b";
+  const useVlm = selectedVision !== "heuristic";
+  const crop = getInpaintCropState(app) || { mode: "auto", padding: 64, box: null };
+
+  const btn = document.getElementById("inpaint-generate-prompt-btn");
+  const badge = document.getElementById("inpaint-prompt-source-badge");
+  state.generatingPrompt = true;
+  if (btn) btn.disabled = true;
+  if (badge) {
+    badge.style.display = "inline-block";
+    badge.textContent = t("inpaint.assistant.generating", "Анализ области...");
+  }
+
+  try {
+    const res = await apiPost("/api/inpaint/prompt", {
+      source_path: state.source.path,
+      mask: maskLayer.surface.toDataURL(),
+      instruction,
+      crop_mode: crop.mode || "auto",
+      crop_box: crop.mode === "manual" ? crop.box : null,
+      crop_padding: Math.max(0, Math.min(512, parseInt(crop.padding, 10) || 64)),
+      vision_model: useVlm ? selectedVision : null,
+      use_vlm: useVlm,
+    });
+
+    const promptEl = document.getElementById("inpaint-prompt");
+    const negEl = document.getElementById("inpaint-negative-prompt");
+    if (promptEl && res?.prompt) {
+      promptEl.value = res.prompt;
+      try { localStorage.setItem("lazysd_inpaint_prompt", res.prompt); } catch (_) {}
+    }
+    if (negEl && res?.negative_prompt) {
+      negEl.value = res.negative_prompt;
+      try { localStorage.setItem("lazysd_inpaint_negative_prompt", res.negative_prompt); } catch (_) {}
+    }
+
+    if (badge) {
+      badge.style.display = "inline-block";
+      const srcLabel = res?.source === "vlm"
+        ? `${t("inpaint.assistant.source_vlm", "VLM")}${res.model ? ` · ${res.model}` : ""}`
+        : t("inpaint.assistant.source_heuristic", "эвристика");
+      badge.textContent = res?.cached
+        ? `${srcLabel} (${t("inpaint.assistant.source_cached", "кэш")})`
+        : srcLabel;
+      badge.title = Array.isArray(res?.warnings) && res.warnings.length
+        ? res.warnings.join("; ")
+        : "";
+    }
+    if (Array.isArray(res?.warnings) && res.warnings.length) {
+      toast("info", res.warnings[0]);
+    }
+  } catch (e) {
+    if (badge) badge.style.display = "none";
+    toast("error", e.message || "Ошибка генерации промпта");
+  } finally {
+    state.generatingPrompt = false;
+    updateStatus(app);
+  }
+}
+
 export function onInpaintVaeChange() {
   const select = document.getElementById("inpaint-vae-select");
   const customInput = document.getElementById("inpaint-custom-vae-input");
@@ -1881,6 +2163,18 @@ export function initInpaintStudio(appRef = null) {
   initInpaintMaskEvents(app);
   initInpaintCropEvents(app);
   renderInpaintModels(app);
+  loadInpaintVisionModels(app);
+  const instrEl = document.getElementById("inpaint-instruction");
+  if (instrEl && !instrEl.dataset.bound) {
+    instrEl.dataset.bound = "1";
+    try {
+      const savedInstr = localStorage.getItem("lazysd_inpaint_instruction");
+      if (savedInstr && !instrEl.value) instrEl.value = savedInstr;
+    } catch (_) {}
+    instrEl.addEventListener("input", () => {
+      try { localStorage.setItem("lazysd_inpaint_instruction", instrEl.value); } catch (_) {}
+    });
+  }
   // Seed steps/CFG from the model once per page load; later tab switches
   // keep the user's manual values.
   const modelSelect = document.getElementById("inpaint-model-select");

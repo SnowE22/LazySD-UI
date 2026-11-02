@@ -81,6 +81,11 @@
       }
     }
   ],
+  "prompt_upsamplers": [
+    "hf.co/unsloth/flux-3-image-klein-pup-GGUF:UD-Q4_K_XL",
+    "hf.co/unsloth/flux-3-image-klein-pup-GGUF:Q4_K_M",
+    "hf.co/unsloth/flux-3-image-klein-pup-GGUF:Q8_0"
+  ],
   "transformers": [
     {
       "id": "q8_0",

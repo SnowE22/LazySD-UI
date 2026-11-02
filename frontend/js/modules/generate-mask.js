@@ -422,7 +422,7 @@ export function initGenMaskUI(appRef = null) {
     let painting = false;
 
     canvas.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 || window.spacePressed) return;
       const st = getGenMaskState(app);
       if (!st?.enabled) return;
       const surface = ensureSurface(app);

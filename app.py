@@ -2248,6 +2248,23 @@ def create_app() -> FastAPI:
 
 
             qf_disabled = quantfunc_model_disabled(m, qf_enabled)
+            from backend.vision_models import get_catalog_entry as _get_vision_entry, is_local_vision_model_installed as _is_vision_installed
+            pup_entries = []
+            for _pup_id in getattr(m, "prompt_upsamplers", []):
+                _pe = _get_vision_entry(_pup_id)
+                if _pe:
+                    pup_entries.append({
+                        "id": _pe["id"],
+                        "name": _pe["name"],
+                        "provider": _pe.get("provider", "ollama"),
+                        "repo_id": _pe.get("repo_id", ""),
+                        "primary_file": _pe.get("primary_file", ""),
+                        "size_gb": _pe.get("size_gb", 0.0),
+                        "vram_min_gb": _pe.get("vram_min_gb", 8),
+                        "recommended": bool(_pe.get("recommended", False)),
+                        "description": _pe.get("description", ""),
+                        "installed": _is_vision_installed(_pe, settings.models_dir),
+                    })
 
 
 
@@ -2270,6 +2287,7 @@ def create_app() -> FastAPI:
 
                 "pipeline": m.pipeline,
                 "supports_mask": model_supports_mask(m),
+                "prompt_upsamplers": pup_entries,
 
 
 
@@ -2556,6 +2574,11 @@ def create_app() -> FastAPI:
 
             installed_engines.append("sdnq")
 
+        from backend.ollama_engine import is_ollama_installed, get_ollama_status_dict
+        ollama_st = get_ollama_status_dict(getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434"))
+        if ollama_st.get("installed"):
+            installed_engines.append("ollama")
+
 
 
 
@@ -2755,6 +2778,8 @@ def create_app() -> FastAPI:
 
 
             "sdnq_version": get_sdnq_version(),
+
+            "ollama": ollama_st,
 
 
 
@@ -3404,6 +3429,23 @@ def create_app() -> FastAPI:
 
 
             qf_disabled = quantfunc_model_disabled(m, qf_enabled)
+            from backend.vision_models import get_catalog_entry as _get_vision_entry, is_local_vision_model_installed as _is_vision_installed
+            pup_entries = []
+            for _pup_id in getattr(m, "prompt_upsamplers", []):
+                _pe = _get_vision_entry(_pup_id)
+                if _pe:
+                    pup_entries.append({
+                        "id": _pe["id"],
+                        "name": _pe["name"],
+                        "provider": _pe.get("provider", "ollama"),
+                        "repo_id": _pe.get("repo_id", ""),
+                        "primary_file": _pe.get("primary_file", ""),
+                        "size_gb": _pe.get("size_gb", 0.0),
+                        "vram_min_gb": _pe.get("vram_min_gb", 8),
+                        "recommended": bool(_pe.get("recommended", False)),
+                        "description": _pe.get("description", ""),
+                        "installed": _is_vision_installed(_pe, settings.models_dir),
+                    })
 
 
 
@@ -3426,6 +3468,7 @@ def create_app() -> FastAPI:
 
                 "pipeline": m.pipeline,
                 "supports_mask": model_supports_mask(m),
+                "prompt_upsamplers": pup_entries,
 
 
 
@@ -9337,6 +9380,15 @@ def create_app() -> FastAPI:
 
 
 
+                if getattr(settings, 'vision_enabled', True):
+                    try:
+                        from backend.vision_runtime import unload_vision_model
+                        unload_vision_model(
+                            getattr(settings, 'vision_ollama_url', 'http://127.0.0.1:11434'),
+                            getattr(settings, 'vision_model', None),
+                        )
+                    except Exception:
+                        pass
                 result = worker.generate(request, STATE.gpu_info, progress_callback=progress_cb)
 
 
@@ -9712,6 +9764,9 @@ def create_app() -> FastAPI:
 
 
             "models_dir", "output_dir",
+            "vision_enabled", "vision_provider", "vision_model",
+            "vision_ollama_url", "vision_keep_alive", "vision_timeout_sec",
+            "vision_max_image_dim", "vision_fallback_enabled",
 
 
 
@@ -9760,7 +9815,10 @@ def create_app() -> FastAPI:
                 if _ep and not _ep.lower().startswith(("http://", "https://")):
                     raise HTTPException(400, "hf_endpoint must start with http:// or https://")
                 updates["hf_endpoint"] = _ep.rstrip("/")
-            settings.update(**updates)
+            try:
+                settings.update(**updates)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
             if "hf_transfer" in updates or "hf_endpoint" in updates:
                 apply_hf_download_settings(
                     getattr(settings, "hf_transfer", False), getattr(settings, "hf_endpoint", None))
@@ -9929,6 +9987,16 @@ def create_app() -> FastAPI:
 
                 }
 
+            elif engine_type == "ollama":
+                from backend.ollama_engine import download_and_extract_portable_ollama
+                binary_path = await asyncio.to_thread(download_and_extract_portable_ollama, force=bool(body.get("force", False)))
+                return {
+                    "status": "ok",
+                    "engine": "ollama",
+                    "path": str(binary_path),
+                    "message": f"Ollama installed: {binary_path}",
+                }
+
 
 
             elif engine_type == "sdnq":
@@ -10035,13 +10103,42 @@ def create_app() -> FastAPI:
             elif engine_type in ("nunchaku", "orbitquant"):
                 from backend.extras import uninstall_component
                 result = await asyncio.to_thread(uninstall_component, engine_type)
+            elif engine_type == "ollama":
+                from backend.ollama_engine import stop_ollama_server
+                await asyncio.to_thread(stop_ollama_server)
+                import shutil
+                from pathlib import Path
+                target_dir = Path(__file__).resolve().parent / "bin" / "windows" / "ollama"
+                if target_dir.is_dir():
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                result = {"engine": "ollama", "freed_mb": 1600}
             else:
-                raise HTTPException(400, "engine must be sd_cpp, sdnq, nunchaku, or orbitquant")
+                raise HTTPException(400, "engine must be sd_cpp, sdnq, nunchaku, orbitquant, or ollama")
             return {"status": "ok", **result}
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(500, f"Engine uninstall failed: {e}")
+
+    @app.get("/api/engine/ollama/status")
+    async def api_ollama_status():
+        from backend.ollama_engine import get_ollama_status_dict
+        settings = get_settings()
+        return get_ollama_status_dict(getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434"))
+
+    @app.post("/api/engine/ollama/start")
+    async def api_ollama_start():
+        from backend.ollama_engine import start_ollama_server
+        settings = get_settings()
+        url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
+        ok = await asyncio.to_thread(start_ollama_server, url)
+        return {"status": "ok" if ok else "error", "running": ok}
+
+    @app.post("/api/engine/ollama/stop")
+    async def api_ollama_stop():
+        from backend.ollama_engine import stop_ollama_server
+        ok = await asyncio.to_thread(stop_ollama_server)
+        return {"status": "ok" if ok else "error", "running": False}
 
 
 
@@ -14109,6 +14206,251 @@ def create_app() -> FastAPI:
 
 
 
+
+
+    # ---------- API: Vision & Inpaint Prompt Generator ----------
+
+    @app.get("/api/vision/status")
+    async def api_vision_status():
+        from backend.vision_runtime import check_ollama_status
+        settings = get_settings()
+        ollama_url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
+        st = await asyncio.to_thread(check_ollama_status, ollama_url)
+        return {
+            "provider": getattr(settings, "vision_provider", "ollama"),
+            "vision_enabled": bool(getattr(settings, "vision_enabled", True)),
+            "ollama_available": st["ollama_available"],
+            "ollama_version": st["ollama_version"],
+            "active_model": getattr(settings, "vision_model", "qwen2.5vl:3b"),
+            "keep_alive": getattr(settings, "vision_keep_alive", "0s"),
+            "fallback_enabled": bool(getattr(settings, "vision_fallback_enabled", True)),
+            "vram_note": "Vision model is unloaded automatically (keep_alive=0s) before diffusion runs.",
+        }
+
+    @app.get("/api/vision/models")
+    async def api_vision_models():
+        from backend.extras import is_nunchaku_ready
+        from backend.vision_models import build_vision_models_response
+        from backend.vision_runtime import check_ollama_status
+        settings = get_settings()
+        ollama_url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
+        st = await asyncio.to_thread(check_ollama_status, ollama_url)
+        return build_vision_models_response(
+            installed_tags=st["installed_tags"],
+            ollama_available=st["ollama_available"],
+            provider=getattr(settings, "vision_provider", "ollama"),
+            models_dir=settings.models_dir,
+            nunchaku_available=is_nunchaku_ready(),
+        )
+
+    @app.post("/api/vision/models/{model_id:path}/download")
+    async def api_vision_model_download(model_id: str, body: Optional[dict] = None, request: Request = None):
+        if request:
+            from backend.accounts import resolve_account_from_scope
+            caller = request.scope.get("state", {}).get("account") or resolve_account_from_scope(request.scope)
+            if caller.get("is_guest", False):
+                raise HTTPException(403, "Загрузка моделей доступна только хосту.")
+        from backend.vision_models import get_catalog_entry, get_download_state
+        from backend.vision_runtime import check_ollama_status, start_vision_model_download
+
+        entry = get_catalog_entry(model_id)
+        if not entry:
+            raise HTTPException(404, f"Unknown vision model: {model_id}")
+
+        existing = get_download_state(entry["id"])
+        if existing and existing.get("status") == "downloading":
+            return existing
+
+        req_provider = str((body or {}).get("provider") or "").strip().lower() or None
+        eff_provider = req_provider or entry.get("provider", "ollama")
+        if entry.get("provider") == "nunchaku":
+            eff_provider = "nunchaku"
+
+        settings = get_settings()
+        ollama_url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
+        if eff_provider == "ollama":
+            st = await asyncio.to_thread(check_ollama_status, ollama_url)
+            if not st["ollama_available"]:
+                raise HTTPException(503, f"Ollama is not reachable at {ollama_url}. Start Ollama first or switch provider to GGUF (HF Cache).")
+
+        job_id = f"vision-{uuid.uuid4().hex[:10]}"
+        STATE.register_job(job_id, kind="download", shared=True)
+        STATE.update_job(job_id, ProgressEvent(
+            status=JobStatus.DOWNLOADING,
+            progress=0.0,
+            message=f"Downloading {entry['name']}...",
+        ))
+
+        def _on_vision_progress(
+            pct: float,
+            detail: str,
+            downloaded_bytes: Optional[int] = None,
+            total_bytes: Optional[int] = None,
+            speed_bps: Optional[float] = None,
+            status: str = "downloading",
+            error: Optional[str] = None,
+        ) -> None:
+            if status == "complete":
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.COMPLETE,
+                    progress=1.0,
+                    message=f"{entry['name']} installed ✓",
+                    downloaded_bytes=downloaded_bytes,
+                    total_bytes=total_bytes,
+                ))
+            elif status == "cancelled":
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.CANCELLED,
+                    progress=0.0,
+                    message="Download cancelled",
+                ))
+            elif status == "error":
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.ERROR,
+                    progress=0.0,
+                    message=detail or "Download failed",
+                    error=error or detail,
+                ))
+            else:
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.DOWNLOADING,
+                    progress=max(0.0, min(1.0, float(pct or 0.0) / 100.0)),
+                    message=detail or f"Downloading {entry['name']}...",
+                    downloaded_bytes=downloaded_bytes,
+                    total_bytes=total_bytes,
+                    speed_bps=speed_bps,
+                ))
+
+        dl_state = start_vision_model_download(
+            ollama_url,
+            entry["id"],
+            progress_callback=_on_vision_progress,
+            models_dir=settings.models_dir,
+            hf_token=settings.huggingface_token,
+            job_id=job_id,
+            preferred_provider=eff_provider,
+        )
+        return dl_state
+
+    @app.delete("/api/vision/models/{model_id:path}")
+    async def api_vision_model_delete(model_id: str, confirm: bool = False, request: Request = None):
+        if request:
+            from backend.accounts import resolve_account_from_scope
+            caller = request.scope.get("state", {}).get("account") or resolve_account_from_scope(request.scope)
+            if caller.get("is_guest", False):
+                raise HTTPException(403, "Удаление моделей доступно только хосту.")
+        from backend.vision_models import get_catalog_entry
+        from backend.vision_runtime import VisionRuntimeError, delete_vision_model
+
+        entry = get_catalog_entry(model_id)
+        target_id = entry["id"] if entry else model_id.strip()
+        settings = get_settings()
+        active_model = getattr(settings, "vision_model", "qwen2.5vl:3b")
+        if target_id == active_model and not confirm:
+            raise HTTPException(
+                409,
+                f"Model '{target_id}' is currently selected as active. Pass ?confirm=true to delete it.",
+            )
+        ollama_url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
+        try:
+            await asyncio.to_thread(delete_vision_model, ollama_url, target_id, 10.0, settings.models_dir)
+        except VisionRuntimeError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+        return {"status": "deleted", "model_id": target_id}
+
+    @app.post("/api/inpaint/prompt")
+    async def api_inpaint_prompt(body: dict):
+        from backend.prompt_gen import PromptGenValidationError, generate_inpaint_prompt
+        from backend.vision_runtime import VisionRuntimeError, VisionTimeoutError
+
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON object body required")
+
+        settings = get_settings()
+        project_root = Path(__file__).resolve().parent
+        allowed_dirs = [
+            (project_root / "uploads").resolve(),
+            settings.output_dir.resolve(),
+            settings.cache_dir.resolve(),
+        ]
+
+        try:
+            result = await asyncio.to_thread(
+                generate_inpaint_prompt,
+                source_path=str(body.get("source_path") or ""),
+                mask=body.get("mask"),
+                instruction=str(body.get("instruction") or ""),
+                crop_mode=str(body.get("crop_mode") or "auto"),
+                crop_box=body.get("crop_box"),
+                crop_padding=int(body.get("crop_padding") if body.get("crop_padding") is not None else 64),
+                vision_model=body.get("vision_model"),
+                vision_provider=body.get("vision_provider"),
+                use_vlm=bool(body.get("use_vlm", True)),
+                settings=settings,
+                project_root=project_root,
+                allowed_dirs=allowed_dirs,
+            )
+            return result
+        except PromptGenValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except VisionTimeoutError as exc:
+            raise HTTPException(504, str(exc)) from exc
+        except VisionRuntimeError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+    @app.post("/api/prompt/upsample")
+    async def api_prompt_upsample(body: dict):
+        from backend.prompt_gen import PromptGenValidationError, _encode_image_b64, _resize_max_dim, resolve_safe_source_path
+        from backend.vision_runtime import VisionRuntimeError, VisionTimeoutError, upsample_flux3_prompt
+        from PIL import Image
+
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON object body required")
+
+        raw_prompt = str(body.get("prompt") or "").strip()
+        if not raw_prompt:
+            raise HTTPException(400, "prompt is required")
+
+        settings = get_settings()
+        project_root = Path(__file__).resolve().parent
+        allowed_dirs = [
+            (project_root / "uploads").resolve(),
+            settings.output_dir.resolve(),
+            settings.cache_dir.resolve(),
+        ]
+
+        images_b64 = []
+        ref_path = str(body.get("init_image_path") or body.get("source_path") or "").strip()
+        if ref_path:
+            try:
+                resolved = resolve_safe_source_path(ref_path, project_root=project_root, allowed_dirs=allowed_dirs)
+                with Image.open(resolved) as im:
+                    resized = _resize_max_dim(im.convert("RGB"), getattr(settings, "vision_max_image_dim", 1024))
+                    images_b64.append(_encode_image_b64(resized))
+            except Exception as exc:
+                raise HTTPException(400, f"Invalid reference image: {exc}") from exc
+
+        try:
+            res = await asyncio.to_thread(
+                upsample_flux3_prompt,
+                prompt=raw_prompt,
+                width=int(body.get("width") or 1024),
+                height=int(body.get("height") or 1024),
+                images_b64=images_b64 or None,
+                model_id=body.get("vision_model") or getattr(settings, "vision_model", None),
+                ollama_url=getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434"),
+                timeout_sec=int(getattr(settings, "vision_timeout_sec", 120) or 120),
+                keep_alive=str(getattr(settings, "vision_keep_alive", "0s") or "0s"),
+                models_dir=settings.models_dir,
+            )
+            return res
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except VisionTimeoutError as exc:
+            raise HTTPException(504, str(exc)) from exc
+        except VisionRuntimeError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
 
     return app
 

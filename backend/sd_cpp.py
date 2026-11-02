@@ -1004,8 +1004,9 @@ class SDCppWorker:
         if noise_val > 0.0 or mapped_sampler in ("euler_a", "er_sde", "dpm++2s_a", "lcm"):
             cmd.extend(["--eta", str(noise_val)])
 
-        # Logging — show crop dimensions when mask is active
-        logger.info(f"[sd_cpp] Launching SD.CPP: {engine_width}x{engine_height}, steps={request.steps}, cfg={cfg_val}, sampler={mapped_sampler}, eta={noise_val}, seed={seed}")
+        # Logging
+        crop_msg = f" (crop from {width}x{height} source)" if mask_ctx is not None else ""
+        logger.info(f"[sd_cpp] Launching SD.CPP: {engine_width}x{engine_height}{crop_msg}, steps={request.steps}, cfg={cfg_val}, sampler={mapped_sampler}, eta={noise_val}, seed={seed}")
         logger.debug(f"[sd_cpp] CLI args: {' '.join(cmd)}")
 
         # 4. Environment PATH

@@ -25,31 +25,18 @@
   },
   "text_encoders": [
     {
-      "id": "qwen3_4b_text_nunchaku",
-      "name": "Qwen3-4B Text Encoder (Tonera SVDQ INT4)",
-      "repo": "tonera/Qwen3-4B-text-Nunchaku",
-      "file": "svdq-int4-Qwen3-4B-text-Nunchaku.safetensors",
-      "path": "svdq-int4-Qwen3-4B-text-Nunchaku.safetensors",
-      "size_gb": 2.68,
+      "id": "qwen3_8b_text_nunchaku",
+      "name": "Qwen3-8B Text Encoder (Tonera SVDQ INT4)",
+      "repo": "tonera/Qwen3-text-Nunchaku",
+      "file": "svdq-int4-Qwen3-text-Nunchaku.safetensors",
+      "path": "svdq-int4-Qwen3-text-Nunchaku.safetensors",
+      "size_gb": 4.86,
+      "size_bytes": 5218695392,
       "precision": "int4",
       "recommended": true,
       "source": {
-        "repo_id": "tonera/Qwen3-4B-text-Nunchaku",
-        "file_path": "svdq-int4-Qwen3-4B-text-Nunchaku.safetensors"
-      }
-    },
-    {
-      "id": "qwen3_8b_q8_0",
-      "name": "Qwen3-8B Q8_0 GGUF (~8.1 GB, High Fidelity)",
-      "repo": "unsloth/Qwen3-8B-GGUF",
-      "file": "Qwen3-8B-Q8_0.gguf",
-      "path": "Qwen3-8B-Q8_0.gguf",
-      "size_gb": 8.11,
-      "precision": "q8_0",
-      "recommended": false,
-      "source": {
-        "repo_id": "unsloth/Qwen3-8B-GGUF",
-        "file_path": "Qwen3-8B-Q8_0.gguf"
+        "repo_id": "tonera/Qwen3-text-Nunchaku",
+        "file_path": "svdq-int4-Qwen3-text-Nunchaku.safetensors"
       }
     }
   ],
@@ -123,9 +110,9 @@
   "base_repo_id": "",
   "engine_args": {
     "diffusion_model": "svdq-int4_r32-FLUX.2-klein-9b-kv-Nunchaku.safetensors",
-    "llm": "svdq-int4-Qwen3-4B-text-Nunchaku.safetensors",
-    "llm_repo": "tonera/Qwen3-4B-text-Nunchaku",
-    "llm_file": "svdq-int4-Qwen3-4B-text-Nunchaku.safetensors",
+    "llm": "svdq-int4-Qwen3-text-Nunchaku.safetensors",
+    "llm_repo": "tonera/Qwen3-text-Nunchaku",
+    "llm_file": "svdq-int4-Qwen3-text-Nunchaku.safetensors",
     "vae": "vae/diffusion_pytorch_model.safetensors",
     "vae_repo": "tonera/FLUX.2-klein-9b-kv-Nunchaku",
     "vae_file": "vae/diffusion_pytorch_model.safetensors",
