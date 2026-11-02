@@ -8543,7 +8543,6 @@ def create_app() -> FastAPI:
                 if raw_ref and isinstance(raw_ref, str) and raw_ref.startswith("data:image"):
                     try:
                         import base64
-                        import uuid
                         header, encoded = raw_ref.split(",", 1)
                         img_bytes = base64.b64decode(encoded)
                         uploads_dir = settings.output_dir / "uploads"
@@ -8871,7 +8870,6 @@ def create_app() -> FastAPI:
                     ],
                 })
             try:
-                import math
                 from backend.masking import MaskError, decode_mask_to_float, is_mask_empty
                 from backend.security import validate_path
 
