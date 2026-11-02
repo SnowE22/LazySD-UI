@@ -423,9 +423,118 @@ class CloudflaredProvider(TunnelProvider):
         return m.group(0) if m else None
 
 
+class GradioProvider(TunnelProvider):
+    """Gradio Live tunnel via Hugging Face FRP (frpc). Free, no account, 72h lifetime, no 100s timeout."""
+
+    id = "gradio"
+    label = "Gradio Live (Hugging Face)"
+    _URL_RE = re.compile(r"https://[a-zA-Z0-9\-]+\.gradio\.live")
+    _ASSET = {
+        "win32": "frpc_windows_amd64.exe",
+        "linux": "frpc_linux_amd64",
+    }
+    _DOWNLOAD_URL = "https://cdn-media.huggingface.co/frpc-gradio-0.2/"
+
+    def _local_path(self) -> Path:
+        return _bin_dir() / ("frpc.exe" if IS_WINDOWS else "frpc")
+
+    def executable(self) -> Optional[str]:
+        local = self._local_path()
+        if local.is_file() and local.stat().st_size > 2 * 1024 * 1024:
+            return str(local)
+        try:
+            from gradio import tunneling
+            if os.path.isfile(tunneling.BINARY_PATH):
+                return str(tunneling.BINARY_PATH)
+        except Exception:
+            pass
+        return shutil.which("frpc")
+
+    def install(self, progress=None, force: bool = False) -> str:
+        dest = self._local_path()
+        if not force and dest.is_file() and dest.stat().st_size > 2 * 1024 * 1024:
+            return str(dest)
+        existing = self.executable()
+        if not force and existing:
+            return existing
+
+        # 1. Try gradio's built-in downloader if gradio is installed
+        try:
+            from gradio import tunneling
+            if progress:
+                progress("Downloading frpc via Gradio...")
+            tunneling.Tunnel.download_binary()
+            if os.path.isfile(tunneling.BINARY_PATH):
+                return str(tunneling.BINARY_PATH)
+        except Exception:
+            pass
+
+        # 2. Standalone download directly from Hugging Face CDN
+        import requests
+        asset = self._ASSET.get("win32" if IS_WINDOWS else sys.platform if sys.platform.startswith("linux") else "")
+        if not asset:
+            raise RuntimeError("Automatic frpc install supports Windows and Linux only. "
+                               "Install it manually and make sure `frpc` is on PATH.")
+        url = f"{self._DOWNLOAD_URL}{asset}"
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        if progress:
+            progress(f"Downloading {url}")
+        try:
+            with requests.get(url, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(1024 * 256):
+                        f.write(chunk)
+            if tmp.stat().st_size < 2 * 1024 * 1024:
+                raise RuntimeError("Downloaded frpc looks truncated")
+            tmp.replace(dest)
+            if not IS_WINDOWS:
+                dest.chmod(0o755)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return str(dest)
+
+    def command(self, exe: str, port: int) -> list[str]:
+        # Default/fallback Hugging Face tunnel server
+        remote_host = "44.237.78.176"
+        remote_port = 7000
+        try:
+            import requests
+            r = requests.get("https://api.gradio.app/v2/tunnel-request", timeout=5)
+            if r.status_code == 200:
+                payload = r.json()[0]
+                remote_host = payload.get("host", remote_host)
+                remote_port = int(payload.get("port", remote_port))
+        except Exception:
+            pass
+
+        share_token = secrets.token_hex(16)
+        return [
+            exe,
+            "http",
+            "-n",
+            share_token,
+            "-l",
+            str(port),
+            "-i",
+            "127.0.0.1",
+            "--uc",
+            "--sd",
+            "random",
+            "--ue",
+            "--server_addr",
+            f"{remote_host}:{remote_port}",
+            "--disable_log_color",
+        ]
+
+    def parse_url(self, line: str) -> Optional[str]:
+        m = self._URL_RE.search(line)
+        return m.group(0) if m else None
+
+
 PROVIDERS: dict[str, type[TunnelProvider]] = {
     CloudflaredProvider.id: CloudflaredProvider,
-    # Future: "ngrok": NgrokProvider, "localtunnel": ..., "ssh": ...
+    GradioProvider.id: GradioProvider,
 }
 
 
@@ -656,7 +765,11 @@ def register_share_routes(app) -> None:
         return mgr.status()
 
     @app.post("/api/share/start")
-    async def share_start():
+    async def share_start(body: Optional[dict] = None):
+        if body and isinstance(body, dict):
+            provider_id = body.get("provider")
+            if provider_id and provider_id in PROVIDERS:
+                get_settings().update(share_tunnel_provider=provider_id)
         try:
             return await asyncio.to_thread(mgr.start)
         except Exception as e:
