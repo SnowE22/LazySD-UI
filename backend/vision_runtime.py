@@ -706,17 +706,24 @@ def upsample_flux3_prompt(
 
 
 def unload_vision_model(ollama_url: str, model_id: Optional[str] = None, timeout: float = 3.0) -> bool:
-    """Explicitly unload any active VLM from Ollama VRAM before starting diffusion."""
+    """Explicitly unload any active VLM / Prompt Upsampler from Ollama VRAM before starting diffusion."""
     global _LAST_ACTIVE_OLLAMA_MODEL
     targets = []
     for cand in (_LAST_ACTIVE_OLLAMA_MODEL, model_id):
         if cand and cand != "flux3-pup-nunchaku" and cand not in targets:
             targets.append(cand)
-    if not targets:
-        return False
     unloaded = False
     try:
         base = validate_ollama_url(ollama_url)
+        # Also query /api/ps so any running Ollama model (PUP GGUF, Qwen3-VL, Gemma3, etc.) is unloaded
+        try:
+            ps_resp = _http_json(f"{base}/api/ps", method="GET", timeout=1.5)
+            for m in ps_resp.get("models") or []:
+                m_name = m.get("name") or m.get("model")
+                if isinstance(m_name, str) and m_name.strip() and m_name.strip() not in targets:
+                    targets.append(m_name.strip())
+        except Exception:
+            pass
         for t_model in targets:
             try:
                 _http_json(

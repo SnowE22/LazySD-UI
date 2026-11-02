@@ -93,6 +93,72 @@ VISION_MODELS_CATALOG: List[Dict[str, Any]] = [
         "description": "High-precision Q8_0 GGUF + mmproj-F16 of FLUX 3 Image Klein Prompt Upsampler (near-lossless vs BF16).",
     },
     {
+        "id": "qwen3-vl:4b",
+        "name": "Qwen3-VL 4B (Новое поколение)",
+        "provider": "ollama",
+        "supported_providers": ["ollama", "gguf"],
+        "ollama_fallback_tag": "hf.co/unsloth/Qwen3-VL-4B-Instruct-GGUF:Q4_K_M",
+        "repo_id": "unsloth/Qwen3-VL-4B-Instruct-GGUF",
+        "local_dir": "qwen3_vl_gguf",
+        "primary_file": "Qwen3-VL-4B-Instruct-Q4_K_M.gguf",
+        "mmproj_file": "mmproj-F16.gguf",
+        "support_files": ["mmproj-F16.gguf"],
+        "size_gb": 3.1,
+        "vram_min_gb": 6,
+        "recommended": True,
+        "capabilities": ["vision", "t2i", "i2i"],
+        "description": "Новейшая мультимодальная модель Qwen3-VL 4B: точное понимание манги, SFX, анатомии и сцен при минимальном расходе VRAM (6-8 GB).",
+    },
+    {
+        "id": "qwen3-vl:8b",
+        "name": "Qwen3-VL 8B (Новое поколение)",
+        "provider": "ollama",
+        "supported_providers": ["ollama", "gguf"],
+        "ollama_fallback_tag": "hf.co/unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M",
+        "repo_id": "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+        "local_dir": "qwen3_vl_gguf",
+        "primary_file": "Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+        "mmproj_file": "mmproj-F16.gguf",
+        "support_files": ["mmproj-F16.gguf"],
+        "size_gb": 5.2,
+        "vram_min_gb": 8,
+        "recommended": True,
+        "capabilities": ["vision", "t2i", "i2i"],
+        "description": "Флагманская компактная VLM Qwen3-VL 8B для глубокого анализа сложных фонов, ракурсов и инпейнта (8-12 GB VRAM).",
+    },
+    {
+        "id": "gemma3:4b",
+        "name": "Gemma 3 Vision 4B (Google)",
+        "provider": "ollama",
+        "supported_providers": ["ollama", "gguf"],
+        "repo_id": "unsloth/gemma-3-4b-it-GGUF",
+        "local_dir": "gemma3_vl_gguf",
+        "primary_file": "gemma-3-4b-it-Q4_K_M.gguf",
+        "mmproj_file": "mmproj-F16.gguf",
+        "support_files": ["mmproj-F16.gguf"],
+        "size_gb": 3.3,
+        "vram_min_gb": 6,
+        "recommended": True,
+        "capabilities": ["vision", "t2i", "i2i"],
+        "description": "Современная мультимодальная модель Google Gemma 3 (4B) с высокой скоростью генерации промптов для FLUX / SD (6-8 GB VRAM).",
+    },
+    {
+        "id": "gemma3:12b",
+        "name": "Gemma 3 Vision 12B (Google)",
+        "provider": "ollama",
+        "supported_providers": ["ollama", "gguf"],
+        "repo_id": "unsloth/gemma-3-12b-it-GGUF",
+        "local_dir": "gemma3_vl_gguf",
+        "primary_file": "gemma-3-12b-it-Q4_K_M.gguf",
+        "mmproj_file": "mmproj-F16.gguf",
+        "support_files": ["mmproj-F16.gguf"],
+        "size_gb": 8.1,
+        "vram_min_gb": 12,
+        "recommended": False,
+        "capabilities": ["vision", "t2i", "i2i"],
+        "description": "Старшая версия Google Gemma 3 (12B) с детальным пониманием композиции, освещения и художественного стиля (12+ GB VRAM).",
+    },
+    {
         "id": "qwen2.5vl:3b",
         "name": "Qwen2.5-VL 3B",
         "provider": "ollama",
@@ -106,7 +172,7 @@ VISION_MODELS_CATALOG: List[Dict[str, Any]] = [
         "vram_min_gb": 6,
         "recommended": True,
         "capabilities": ["vision"],
-        "description": "Fast & compact vision model recommended for GPUs with 6-8 GB VRAM.",
+        "description": "Быстрая и компактная VLM-модель для видеокарт с 6-8 GB VRAM.",
     },
     {
         "id": "qwen2.5vl:7b",
@@ -186,9 +252,13 @@ def _normalize_tag(tag: str) -> str:
 def is_tag_matching(catalog_id: str, installed_tags: List[str]) -> bool:
     cid = (catalog_id or "").strip().lower()
     cid_base = _normalize_tag(cid)
+    entry = get_catalog_entry(catalog_id)
+    alt_tag = str((entry or {}).get("ollama_fallback_tag") or "").strip().lower()
     for raw in installed_tags:
         r = (raw or "").strip().lower()
         if r == cid or _normalize_tag(r) == cid:
+            return True
+        if alt_tag and (r == alt_tag or _normalize_tag(r) == _normalize_tag(alt_tag)):
             return True
         if ":" not in cid and _normalize_tag(r) == cid_base:
             return True

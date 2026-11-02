@@ -162,6 +162,12 @@ def start_ollama_server(url: str = DEFAULT_OLLAMA_URL, timeout: float = 15.0) ->
     if sys.platform == "win32":
         creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
+    # Always store Ollama model blobs on the project drive (models/cache/ollama) instead of C:\Users\<user>\.ollama
+    ollama_models_dir = (Path(__file__).resolve().parent.parent / "models" / "cache" / "ollama").resolve()
+    ollama_models_dir.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["OLLAMA_MODELS"] = str(ollama_models_dir)
+
     # Spawn daemon
     subprocess.Popen(
         [str(binary), "serve"],
@@ -170,6 +176,7 @@ def start_ollama_server(url: str = DEFAULT_OLLAMA_URL, timeout: float = 15.0) ->
         stdin=subprocess.DEVNULL,
         creationflags=creationflags,
         cwd=str(binary.parent),
+        env=env,
     )
 
     # Wait for daemon to respond
