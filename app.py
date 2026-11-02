@@ -14147,6 +14147,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/vision/models")
     async def api_vision_models():
+        from backend.extras import is_nunchaku_ready
         from backend.vision_models import build_vision_models_response
         from backend.vision_runtime import check_ollama_status
         settings = get_settings()
@@ -14156,6 +14157,8 @@ def create_app() -> FastAPI:
             installed_tags=st["installed_tags"],
             ollama_available=st["ollama_available"],
             provider=getattr(settings, "vision_provider", "ollama"),
+            models_dir=settings.models_dir,
+            nunchaku_available=is_nunchaku_ready(),
         )
 
     @app.post("/api/vision/models/{model_id:path}/download")
@@ -14178,11 +14181,17 @@ def create_app() -> FastAPI:
 
         settings = get_settings()
         ollama_url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
-        st = await asyncio.to_thread(check_ollama_status, ollama_url)
-        if not st["ollama_available"]:
-            raise HTTPException(503, f"Ollama is not reachable at {ollama_url}. Start Ollama first.")
+        if entry.get("provider") == "ollama":
+            st = await asyncio.to_thread(check_ollama_status, ollama_url)
+            if not st["ollama_available"]:
+                raise HTTPException(503, f"Ollama is not reachable at {ollama_url}. Start Ollama first.")
 
-        dl_state = start_vision_model_download(ollama_url, entry["id"])
+        dl_state = start_vision_model_download(
+            ollama_url,
+            entry["id"],
+            models_dir=settings.models_dir,
+            hf_token=settings.huggingface_token,
+        )
         job_id = dl_state["job_id"]
         STATE.register_job(job_id, kind="download", shared=True)
         STATE.update_job(job_id, ProgressEvent(
@@ -14213,7 +14222,7 @@ def create_app() -> FastAPI:
             )
         ollama_url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
         try:
-            await asyncio.to_thread(delete_vision_model, ollama_url, target_id)
+            await asyncio.to_thread(delete_vision_model, ollama_url, target_id, 10.0, settings.models_dir)
         except VisionRuntimeError as exc:
             raise HTTPException(exc.status_code, str(exc)) from exc
         return {"status": "deleted", "model_id": target_id}
@@ -14251,6 +14260,60 @@ def create_app() -> FastAPI:
             )
             return result
         except PromptGenValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except VisionTimeoutError as exc:
+            raise HTTPException(504, str(exc)) from exc
+        except VisionRuntimeError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+    @app.post("/api/prompt/upsample")
+    async def api_prompt_upsample(body: dict):
+        from backend.prompt_gen import PromptGenValidationError, _encode_image_b64, _resize_max_dim, resolve_safe_source_path
+        from backend.vision_runtime import VisionRuntimeError, VisionTimeoutError, upsample_flux3_prompt
+        from PIL import Image
+
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON object body required")
+
+        raw_prompt = str(body.get("prompt") or "").strip()
+        if not raw_prompt:
+            raise HTTPException(400, "prompt is required")
+
+        settings = get_settings()
+        project_root = Path(__file__).resolve().parent
+        allowed_dirs = [
+            (project_root / "uploads").resolve(),
+            settings.output_dir.resolve(),
+            settings.cache_dir.resolve(),
+        ]
+
+        images_b64 = []
+        ref_path = str(body.get("init_image_path") or body.get("source_path") or "").strip()
+        if ref_path:
+            try:
+                resolved = resolve_safe_source_path(ref_path, project_root=project_root, allowed_dirs=allowed_dirs)
+                with Image.open(resolved) as im:
+                    resized = _resize_max_dim(im.convert("RGB"), getattr(settings, "vision_max_image_dim", 1024))
+                    images_b64.append(_encode_image_b64(resized))
+            except Exception as exc:
+                raise HTTPException(400, f"Invalid reference image: {exc}") from exc
+
+        try:
+            res = await asyncio.to_thread(
+                upsample_flux3_prompt,
+                prompt=raw_prompt,
+                width=int(body.get("width") or 1024),
+                height=int(body.get("height") or 1024),
+                images_b64=images_b64 or None,
+                model_id=body.get("vision_model") or getattr(settings, "vision_model", None),
+                ollama_url=getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434"),
+                timeout_sec=int(getattr(settings, "vision_timeout_sec", 120) or 120),
+                keep_alive=str(getattr(settings, "vision_keep_alive", "0s") or "0s"),
+                models_dir=settings.models_dir,
+            )
+            return res
+        except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except VisionTimeoutError as exc:
             raise HTTPException(504, str(exc)) from exc

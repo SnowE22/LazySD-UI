@@ -1918,8 +1918,8 @@ export function onInpaintVisionModelChange(appRef = null) {
   try { localStorage.setItem("lazysd_inpaint_vision_model", val); } catch (_) {}
 
   const entry = (state.visionModels || []).find((m) => m.id === val);
-  const canDownload = Boolean(state.ollamaAvailable && entry && !entry.installed && entry.status !== "downloading");
-  const canDelete = Boolean(state.ollamaAvailable && entry && entry.installed);
+  const canDownload = Boolean(entry && !entry.installed && entry.status !== "downloading" && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
+  const canDelete = Boolean(entry && entry.installed && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
   if (dlBtn) dlBtn.style.display = canDownload ? "inline-flex" : "none";
   if (delBtn) delBtn.style.display = canDelete ? "inline-flex" : "none";
 }
@@ -1983,6 +1983,49 @@ export async function deleteInpaintVisionModel(appRef = null) {
     await loadInpaintVisionModels(app);
   } catch (e) {
     toast("error", e.message || "Ошибка удаления модели");
+  }
+}
+
+export async function upsampleGeneratePrompt(appRef = null) {
+  const app = appRef || window.App;
+  const promptEl = document.getElementById("prompt-input");
+  const btn = document.getElementById("dock-pup-btn");
+  if (!app || !promptEl) return;
+  const raw = (promptEl.value || "").trim();
+  if (!raw) {
+    toast("warning", "Введите краткий промпт для развёртывания (FLUX.3 PUP)");
+    promptEl.focus();
+    return;
+  }
+  const visionSelect = document.getElementById("inpaint-vision-model-select");
+  const selectedVision = visionSelect?.value && visionSelect.value !== "heuristic"
+    ? visionSelect.value
+    : null;
+  const width = parseInt(document.getElementById("width-input")?.value || "1024", 10) || 1024;
+  const height = parseInt(document.getElementById("height-input")?.value || "1024", 10) || 1024;
+  const refPath = app.state?.img2imgRef?.path || null;
+
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiPost("/api/prompt/upsample", {
+      prompt: raw,
+      width,
+      height,
+      init_image_path: refPath,
+      vision_model: selectedVision,
+    });
+    if (res?.prompt) {
+      promptEl.value = res.prompt;
+      if (app.autoResizePrompt) app.autoResizePrompt(promptEl);
+      toast("success", `Промпт развёрнут (${res.model || res.source || "FLUX.3 PUP"})`);
+    }
+    if (Array.isArray(res?.warnings) && res.warnings.length) {
+      toast("info", res.warnings[0]);
+    }
+  } catch (e) {
+    toast("error", e.message || "Ошибка FLUX.3 Prompt Upsampler");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

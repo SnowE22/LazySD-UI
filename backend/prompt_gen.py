@@ -35,7 +35,7 @@ from .masking import (
     resolve_crop_box,
 )
 from .prompt_fallback import generate_heuristic_prompt
-from .vision_models import is_tag_matching
+from .vision_models import get_catalog_entry, is_local_vision_model_installed, is_tag_matching
 from .vision_runtime import (
     VisionRuntimeError,
     VisionTimeoutError,
@@ -303,24 +303,43 @@ def generate_inpaint_prompt(
         instruction=instruction_clean,
     )
 
+    models_dir = getattr(settings, "models_dir", None) if settings is not None else None
+    cat_entry = get_catalog_entry(selected_model)
+    is_nunchaku_pup = bool(cat_entry and cat_entry.get("provider") == "nunchaku")
+
     warnings: List[str] = []
     if effective_use_vlm:
-        status_info = check_ollama_status(ollama_url)
-        if not status_info["ollama_available"]:
-            if not fallback_enabled:
-                raise VisionRuntimeError(
-                    f"Ollama is not reachable at {ollama_url}. Start Ollama or enable heuristic fallback.",
-                    status_code=503,
-                )
-            warnings.append("Ollama is not running; used local heuristic fallback.")
-        elif not is_tag_matching(selected_model, status_info["installed_tags"]):
-            if not fallback_enabled:
-                raise VisionRuntimeError(
-                    f"Vision model '{selected_model}' is not installed in Ollama.",
-                    status_code=409,
-                )
-            warnings.append(f"Vision model '{selected_model}' is not installed; used local heuristic fallback.")
+        can_run_vlm = False
+        if is_nunchaku_pup:
+            if is_local_vision_model_installed(cat_entry, models_dir=models_dir):
+                can_run_vlm = True
+            else:
+                if not fallback_enabled:
+                    raise VisionRuntimeError(
+                        f"Vision model '{selected_model}' is not downloaded yet.",
+                        status_code=409,
+                    )
+                warnings.append(f"Model '{selected_model}' is not downloaded yet; used local heuristic fallback.")
         else:
+            status_info = check_ollama_status(ollama_url)
+            if not status_info["ollama_available"]:
+                if not fallback_enabled:
+                    raise VisionRuntimeError(
+                        f"Ollama is not reachable at {ollama_url}. Start Ollama or enable heuristic fallback.",
+                        status_code=503,
+                    )
+                warnings.append("Ollama is not running; used local heuristic fallback.")
+            elif not is_tag_matching(selected_model, status_info["installed_tags"]):
+                if not fallback_enabled:
+                    raise VisionRuntimeError(
+                        f"Vision model '{selected_model}' is not installed in Ollama.",
+                        status_code=409,
+                    )
+                warnings.append(f"Vision model '{selected_model}' is not installed; used local heuristic fallback.")
+            else:
+                can_run_vlm = True
+
+        if can_run_vlm:
             try:
                 overview_b64, crop_b64 = build_vlm_images(
                     source_image,
@@ -337,6 +356,7 @@ def generate_inpaint_prompt(
                     analysis_hint=heur["analysis"],
                     timeout_sec=timeout_sec,
                     keep_alive=keep_alive,
+                    models_dir=models_dir,
                 )
                 result = {
                     "prompt": vlm_prompt,

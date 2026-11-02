@@ -13959,8 +13959,8 @@ Object.assign(App, {
     try { localStorage.setItem("lazysd_inpaint_vision_model", val); } catch (_) {}
 
     const entry = (state.visionModels || []).find((m) => m.id === val);
-    const canDownload = Boolean(state.ollamaAvailable && entry && !entry.installed && entry.status !== "downloading");
-    const canDelete = Boolean(state.ollamaAvailable && entry && entry.installed);
+    const canDownload = Boolean(entry && !entry.installed && entry.status !== "downloading" && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
+    const canDelete = Boolean(entry && entry.installed && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
     if (dlBtn) dlBtn.style.display = canDownload ? "inline-flex" : "none";
     if (delBtn) delBtn.style.display = canDelete ? "inline-flex" : "none";
   },
@@ -14021,6 +14021,48 @@ Object.assign(App, {
       await this.loadInpaintVisionModels();
     } catch (e) {
       this.toast("error", e.message || "Ошибка удаления модели");
+    }
+  },
+
+  async upsampleGeneratePrompt() {
+    const promptEl = document.getElementById("prompt-input");
+    const btn = document.getElementById("dock-pup-btn");
+    if (!promptEl) return;
+    const raw = (promptEl.value || "").trim();
+    if (!raw) {
+      this.toast("warning", "Введите краткий промпт для развёртывания (FLUX.3 PUP)");
+      promptEl.focus();
+      return;
+    }
+    const visionSelect = document.getElementById("inpaint-vision-model-select");
+    const selectedVision = visionSelect?.value && visionSelect.value !== "heuristic"
+      ? visionSelect.value
+      : null;
+    const width = parseInt(document.getElementById("width-input")?.value || "1024", 10) || 1024;
+    const height = parseInt(document.getElementById("height-input")?.value || "1024", 10) || 1024;
+    const refPath = this.state?.img2imgRef?.path || null;
+
+    if (btn) btn.disabled = true;
+    try {
+      const res = await this.apiPost("/api/prompt/upsample", {
+        prompt: raw,
+        width,
+        height,
+        init_image_path: refPath,
+        vision_model: selectedVision,
+      });
+      if (res?.prompt) {
+        promptEl.value = res.prompt;
+        if (this.autoResizePrompt) this.autoResizePrompt(promptEl);
+        this.toast("success", `Промпт развёрнут (${res.model || res.source || "FLUX.3 PUP"})`);
+      }
+      if (Array.isArray(res?.warnings) && res.warnings.length) {
+        this.toast("info", res.warnings[0]);
+      }
+    } catch (e) {
+      this.toast("error", e.message || "Ошибка FLUX.3 Prompt Upsampler");
+    } finally {
+      if (btn) btn.disabled = false;
     }
   },
 

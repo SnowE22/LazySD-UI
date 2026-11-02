@@ -13,7 +13,22 @@ from backend.vision_models import (
 
 def test_catalog_contains_required_vision_models():
     ids = {m["id"] for m in VISION_MODELS_CATALOG}
-    assert {"qwen2.5vl:3b", "qwen2.5vl:7b", "minicpm-v:8b", "llava:7b"}.issubset(ids)
+    assert {
+        "flux3-pup-nunchaku",
+        "hf.co/unsloth/flux-3-image-klein-pup-GGUF:UD-Q4_K_XL",
+        "hf.co/unsloth/flux-3-image-klein-pup-GGUF:Q4_K_M",
+        "qwen2.5vl:3b",
+        "qwen2.5vl:7b",
+        "minicpm-v:8b",
+        "llava:7b",
+    }.issubset(ids)
+    pup_nunchaku = get_catalog_entry("flux3-pup-nunchaku")
+    assert pup_nunchaku is not None
+    assert pup_nunchaku["repo_id"] == "tonera/flux-3-image-klein-pup-nunchaku"
+    assert "flux3_pup" in pup_nunchaku["capabilities"]
+    pup_gguf = get_catalog_entry("hf.co/unsloth/flux-3-image-klein-pup-GGUF:UD-Q4_K_XL")
+    assert pup_gguf is not None
+    assert pup_gguf["repo_id"] == "unsloth/flux-3-image-klein-pup-GGUF"
     qwen3b = get_catalog_entry("qwen2.5vl:3b")
     assert qwen3b is not None
     assert qwen3b["recommended"] is True

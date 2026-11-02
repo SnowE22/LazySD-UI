@@ -1,19 +1,28 @@
-"""Ollama runtime adapter for local vision-language models (VLM).
+"""Runtime adapter for local Vision-Language Models (VLM) and the official
+FLUX 3 Image Klein Prompt Upsampler (``unsloth/flux-3-image-klein-pup-GGUF`` &
+``tonera/flux-3-image-klein-pup-nunchaku``).
 
 Handles:
 - Checking Ollama availability and version (``/api/version``, ``/api/tags``).
-- Sending multimodal chat completions (``/api/chat``) with base64 images and
-  ``keep_alive="0s"`` so the VLM frees VRAM immediately after replying.
-- Explicit VRAM unloading before diffusion runs.
-- Pulling (``/api/pull``) with streaming progress and deleting (``/api/delete``)
-  vision models.
+- Running ``tonera/flux-3-image-klein-pup-nunchaku`` natively via ``envs/extras``
+  (``NunchakuQwen3_5ForConditionalGeneration``) in an isolated subprocess that
+  releases 100% of VRAM upon completion.
+- Running ``unsloth/flux-3-image-klein-pup-GGUF`` and general VLMs via Ollama
+  ``/api/chat`` with ``keep_alive="0s"``.
+- Downloading models either from Hugging Face (for Nunchaku SVDQ & GGUF) or via
+  Ollama ``/api/pull`` with real-time progress tracking.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
+from pathlib import Path
 import re
 import socket
+import subprocess
+import tempfile
 import threading
 import urllib.error
 import urllib.parse
@@ -23,7 +32,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .prompt_fallback import DEFAULT_NEGATIVE_PROMPT
 from .vision_models import (
     clear_download_state,
+    get_catalog_entry,
     get_download_state,
+    is_local_vision_model_installed,
     set_download_state,
 )
 
@@ -41,6 +52,45 @@ SYSTEM_PROMPT = (
     'Do not include "no text" instructions as text to render; use the negative prompt.\n'
     "Max 60 words."
 )
+
+_FLUX3_PUP_PROMPTS_CACHE: Optional[Dict[str, str]] = None
+
+
+def get_flux3_pup_system_prompts() -> Dict[str, str]:
+    """Load Black Forest Labs' official ``system_prompts.json`` (`t2i`, `i2i`, `t2i_bbox`, `i2i_bbox`)."""
+    global _FLUX3_PUP_PROMPTS_CACHE
+    if _FLUX3_PUP_PROMPTS_CACHE is not None:
+        return _FLUX3_PUP_PROMPTS_CACHE
+    prompts_file = Path(__file__).resolve().parent / "registry" / "flux3_pup_system_prompts.json"
+    try:
+        if prompts_file.is_file():
+            _FLUX3_PUP_PROMPTS_CACHE = json.loads(prompts_file.read_text(encoding="utf-8"))
+            return _FLUX3_PUP_PROMPTS_CACHE
+    except Exception as exc:
+        logger.warning("[vision] Could not read flux3_pup_system_prompts.json: %s", exc)
+    _FLUX3_PUP_PROMPTS_CACHE = {
+        "t2i": (
+            "You are the prompt upsampler of a text-to-image model. Expand the user's short "
+            "request into ONE detailed, self-contained caption: the exact text the image model "
+            "receives. Output only the caption."
+        ),
+        "i2i": (
+            "You are the prompt upsampler of an image-editing model. You see the reference "
+            "image(s) and the user's short request. Expand it into ONE detailed, self-contained "
+            "instruction as one continuous English prose block. Output only the instruction."
+        ),
+    }
+    return _FLUX3_PUP_PROMPTS_CACHE
+
+
+def is_flux3_pup_model(model_id: Optional[str]) -> bool:
+    if not model_id:
+        return False
+    m = model_id.lower()
+    if "flux-3-image-klein-pup" in m or "flux3-pup" in m:
+        return True
+    entry = get_catalog_entry(model_id)
+    return bool(entry and "flux3_pup" in (entry.get("capabilities") or []))
 
 
 class VisionRuntimeError(RuntimeError):
@@ -138,20 +188,18 @@ def check_ollama_status(ollama_url: str, timeout: float = 2.5) -> Dict[str, Any]
 
 
 def parse_vlm_response_text(raw_text: str) -> Tuple[str, str]:
-    """Extract ``(prompt, negative_prompt)`` from VLM text output.
-
-    Strips markdown code fences, attempts JSON parsing anywhere in the response,
-    and falls back to the first non-empty line if the model did not emit valid JSON.
-    """
+    """Extract ``(prompt, negative_prompt)`` from VLM or FLUX 3 PUP text output."""
     text = (raw_text or "").strip()
     if not text:
         raise ValueError("Empty response from vision model")
+
+    # Strip <think>...</think> blocks if any model emitted reasoning tags
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
 
     # Strip ```json ... ``` fences
     cleaned = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned).strip()
 
-    # Try direct JSON or first {...} object
     candidates = [cleaned]
     brace_match = re.search(r"\{[\s\S]*\}", cleaned)
     if brace_match and brace_match.group(0) != cleaned:
@@ -170,15 +218,141 @@ def parse_vlm_response_text(raw_text: str) -> Tuple[str, str]:
         except Exception:
             continue
 
-    # Fallback: take the first non-empty non-brace line
-    for line in cleaned.splitlines():
-        line_s = line.strip().strip('"').strip("'")
-        if line_s and not line_s.startswith("{") and not line_s.startswith("}"):
-            line_s = re.sub(r"^(prompt\s*:\s*)", "", line_s, flags=re.IGNORECASE).strip()
-            if line_s:
-                return line_s[:1000], DEFAULT_NEGATIVE_PROMPT[:500]
+    # Plain prose caption (e.g. from FLUX 3 Prompt Upsampler)
+    prose_lines = [
+        ln.strip()
+        for ln in cleaned.splitlines()
+        if ln.strip() and not ln.strip().startswith(("{", "}"))
+    ]
+    if prose_lines:
+        combined = " ".join(prose_lines)
+        combined = re.sub(r"^(prompt\s*:\s*)", "", combined, flags=re.IGNORECASE).strip().strip('"')
+        if combined:
+            return combined[:1500], DEFAULT_NEGATIVE_PROMPT[:500]
 
     raise ValueError("Could not extract prompt from vision model response")
+
+
+def run_nunchaku_pup_inference(
+    *,
+    model_dir: Path,
+    quant_file: str,
+    prompt_text: str,
+    images_b64: Optional[List[str]] = None,
+    timeout_sec: int = 120,
+) -> str:
+    """Run ``tonera/flux-3-image-klein-pup-nunchaku`` inside the ``envs/extras`` Python environment."""
+    from .extras import get_extras_python
+
+    py_exe = get_extras_python()
+    if not py_exe or not Path(py_exe).is_file():
+        raise VisionRuntimeError("Nunchaku Python environment (envs/extras) is not installed", status_code=503)
+
+    quant_path = (model_dir / quant_file).resolve()
+    if not quant_path.is_file():
+        raise VisionRuntimeError(f"Nunchaku PUP weights not found: {quant_path}", status_code=409)
+
+    # Ensure system_prompts.json exists in model_dir
+    sys_prompts_path = model_dir / "system_prompts.json"
+    if not sys_prompts_path.is_file():
+        sys_prompts_path.write_text(
+            json.dumps(get_flux3_pup_system_prompts(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    runner_code = r"""
+import base64, io, json, sys
+from pathlib import Path
+import torch
+from PIL import Image, ImageOps
+from transformers import AutoProcessor
+from nunchaku import NunchakuQwen3_5ForConditionalGeneration
+
+req = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+model_dir = req["model_dir"]
+quant_path = req["quant_path"]
+prompt = req["prompt"]
+images_b64 = req.get("images_b64") or []
+max_new_tokens = int(req.get("max_new_tokens") or 512)
+
+sys_prompts = json.loads((Path(model_dir) / "system_prompts.json").read_text(encoding="utf-8"))
+processor = AutoProcessor.from_pretrained(model_dir)
+upsampler = NunchakuQwen3_5ForConditionalGeneration.from_pretrained(
+    quant_path, dtype=torch.bfloat16
+).eval().to("cuda")
+
+pil_images = []
+for b64_str in images_b64:
+    raw = base64.b64decode(b64_str)
+    im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    pil_images.append(im)
+
+if pil_images:
+    text = (
+        "Reference images follow in order (the first image, the second image, ...).\n"
+        f"User request: {prompt}\nOutput the caption."
+    )
+    content = [{"type": "image", "image": im} for im in pil_images] + [{"type": "text", "text": text}]
+    messages = [{"role": "system", "content": sys_prompts["i2i"]}, {"role": "user", "content": content}]
+else:
+    messages = [{"role": "system", "content": sys_prompts["t2i"]}, {"role": "user", "content": prompt}]
+
+inputs = processor.apply_chat_template(
+    messages,
+    add_generation_prompt=True,
+    tokenize=True,
+    return_dict=True,
+    return_tensors="pt",
+    enable_thinking=False,
+).to("cuda")
+
+with torch.no_grad():
+    output = upsampler.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+
+prompt_tokens = int(inputs["input_ids"].shape[1])
+new_tokens = output[0, prompt_tokens:]
+caption = processor.decode(new_tokens, skip_special_tokens=True).strip()
+print("PUP_RESULT_JSON:" + json.dumps({"caption": caption}, ensure_ascii=False), flush=True)
+"""
+    with tempfile.TemporaryDirectory(prefix="lazysd_pup_") as tmpdir:
+        req_file = Path(tmpdir) / "request.json"
+        script_file = Path(tmpdir) / "run_pup.py"
+        req_file.write_text(
+            json.dumps({
+                "model_dir": str(model_dir.resolve()),
+                "quant_path": str(quant_path),
+                "prompt": prompt_text,
+                "images_b64": images_b64 or [],
+                "max_new_tokens": 512,
+            }),
+            encoding="utf-8",
+        )
+        script_file.write_text(runner_code, encoding="utf-8")
+
+        try:
+            proc = subprocess.run(
+                [str(py_exe), str(script_file), str(req_file)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=max(15, int(timeout_sec)),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise VisionTimeoutError(f"FLUX.3 Nunchaku Prompt Upsampler timed out after {timeout_sec}s") from exc
+
+        if proc.returncode != 0:
+            err_tail = (proc.stderr or proc.stdout or "").strip()[-400:]
+            raise VisionRuntimeError(f"Nunchaku PUP failed: {err_tail}", status_code=503)
+
+        for line in (proc.stdout or "").splitlines():
+            if line.startswith("PUP_RESULT_JSON:"):
+                data = json.loads(line[len("PUP_RESULT_JSON:"):])
+                caption = str(data.get("caption") or "").strip()
+                if caption:
+                    return caption
+
+        raise VisionRuntimeError("Nunchaku PUP did not return a caption", status_code=503)
 
 
 def generate_vlm_prompt(
@@ -191,41 +365,91 @@ def generate_vlm_prompt(
     analysis_hint: Optional[Dict[str, Any]] = None,
     timeout_sec: int = 120,
     keep_alive: str = "0s",
+    models_dir: Optional[Path] = None,
 ) -> Tuple[str, str]:
-    """Call Ollama ``/api/chat`` with overview + crop images and return ``(prompt, negative_prompt)``."""
-    base = validate_ollama_url(ollama_url)
-    user_parts = []
-    if instruction and instruction.strip():
-        user_parts.append(f"User instruction: {instruction.strip()[:500]}")
-    else:
-        user_parts.append("User instruction: seamlessly inpaint and restore the masked area.")
-    if analysis_hint:
-        colors = ", ".join(analysis_hint.get("dominant_colors") or [])
-        rtype = analysis_hint.get("region_type") or "colored_art"
-        user_parts.append(f"Context hint: region_type={rtype}, surrounding_colors=[{colors}].")
-    user_parts.append(
-        "Image 1 shows the full page with the red mask overlay. "
-        "Image 2 shows the close-up crop around the masked region. "
-        'Respond ONLY with JSON: {"prompt": "...", "negative_prompt": "..."}.'
-    )
+    """Generate ``(prompt, negative_prompt)`` for Inpaint via Nunchaku PUP, FLUX 3 PUP GGUF, or Ollama VLM."""
+    entry = get_catalog_entry(model_id)
+    if entry and entry.get("provider") == "nunchaku":
+        base_models_dir = (models_dir or (Path(__file__).resolve().parent.parent / "models" / "cache")).resolve()
+        model_dir = base_models_dir / entry["local_dir"]
+        req_text = instruction.strip() if (instruction and instruction.strip()) else (
+            "Remove any unwanted text or artifacts in the highlighted region and seamlessly restore the background texture and colors."
+        )
+        caption = run_nunchaku_pup_inference(
+            model_dir=model_dir,
+            quant_file=entry["primary_file"],
+            prompt_text=req_text,
+            images_b64=[overview_b64, crop_b64],
+            timeout_sec=timeout_sec,
+        )
+        return parse_vlm_response_text(caption)
 
-    payload = {
-        "model": model_id,
-        "stream": False,
-        "keep_alive": keep_alive or "0s",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": "\n".join(user_parts),
-                "images": [overview_b64, crop_b64],
+    base = validate_ollama_url(ollama_url)
+    use_flux3_pup = is_flux3_pup_model(model_id)
+
+    if use_flux3_pup:
+        sys_prompts = get_flux3_pup_system_prompts()
+        req_text = instruction.strip() if (instruction and instruction.strip()) else (
+            "Seamlessly restore the area marked in red in the first image and shown close-up in the second image."
+        )
+        user_content = (
+            "Reference images follow in order (the first image, the second image).\n"
+            f"User request: {req_text}\nOutput the caption."
+        )
+        payload = {
+            "model": model_id,
+            "stream": False,
+            "keep_alive": keep_alive or "0s",
+            "think": False,
+            "messages": [
+                {"role": "system", "content": sys_prompts["i2i"]},
+                {
+                    "role": "user",
+                    "content": user_content,
+                    "images": [overview_b64, crop_b64],
+                },
+            ],
+            "options": {
+                "temperature": 1.0,
+                "top_k": 1,
+                "top_p": 0.95,
+                "presence_penalty": 0.0,
+                "repeat_penalty": 1.0,
+                "num_predict": 420,
             },
-        ],
-        "options": {
-            "temperature": 0.2,
-            "num_predict": 220,
-        },
-    }
+        }
+    else:
+        user_parts = []
+        if instruction and instruction.strip():
+            user_parts.append(f"User instruction: {instruction.strip()[:500]}")
+        else:
+            user_parts.append("User instruction: seamlessly inpaint and restore the masked area.")
+        if analysis_hint:
+            colors = ", ".join(analysis_hint.get("dominant_colors") or [])
+            rtype = analysis_hint.get("region_type") or "colored_art"
+            user_parts.append(f"Context hint: region_type={rtype}, surrounding_colors=[{colors}].")
+        user_parts.append(
+            "Image 1 shows the full page with the red mask overlay. "
+            "Image 2 shows the close-up crop around the masked region. "
+            'Respond ONLY with JSON: {"prompt": "...", "negative_prompt": "..."}.'
+        )
+        payload = {
+            "model": model_id,
+            "stream": False,
+            "keep_alive": keep_alive or "0s",
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": "\n".join(user_parts),
+                    "images": [overview_b64, crop_b64],
+                },
+            ],
+            "options": {
+                "temperature": 0.2,
+                "num_predict": 220,
+            },
+        }
 
     resp = _http_json(
         f"{base}/api/chat",
@@ -238,9 +462,141 @@ def generate_vlm_prompt(
     return parse_vlm_response_text(str(content))
 
 
+def upsample_flux3_prompt(
+    *,
+    prompt: str,
+    width: int = 1024,
+    height: int = 1024,
+    images_b64: Optional[List[str]] = None,
+    model_id: Optional[str] = None,
+    ollama_url: str = "http://127.0.0.1:11434",
+    timeout_sec: int = 120,
+    keep_alive: str = "0s",
+    models_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Upsample a short user prompt into a detailed FLUX 3 Image Klein caption (`t2i` or `i2i`)."""
+    clean_prompt = (prompt or "").strip()
+    if not clean_prompt:
+        raise ValueError("Prompt cannot be empty")
+    if len(clean_prompt) > 2000:
+        clean_prompt = clean_prompt[:2000]
+
+    base_models_dir = (models_dir or (Path(__file__).resolve().parent.parent / "models" / "cache")).resolve()
+    sys_prompts = get_flux3_pup_system_prompts()
+    has_images = bool(images_b64)
+    target_prefix = f"TARGET CANVAS: {int(width or 1024)}:{int(height or 1024)}\n" if not has_images else ""
+    formatted_request = f"{target_prefix}{clean_prompt}"
+
+    # 1. Check if Nunchaku PUP is requested or installed locally
+    nunchaku_entry = get_catalog_entry("flux3-pup-nunchaku")
+    if (
+        (model_id == "flux3-pup-nunchaku" or not model_id)
+        and nunchaku_entry
+        and is_local_vision_model_installed(nunchaku_entry, models_dir=base_models_dir)
+    ):
+        caption = run_nunchaku_pup_inference(
+            model_dir=base_models_dir / nunchaku_entry["local_dir"],
+            quant_file=nunchaku_entry["primary_file"],
+            prompt_text=formatted_request,
+            images_b64=images_b64,
+            timeout_sec=timeout_sec,
+        )
+        return {
+            "prompt": caption,
+            "source": "nunchaku_pup",
+            "model": "flux3-pup-nunchaku",
+        }
+
+    # 2. Try Ollama with the requested model or any installed PUP/vision model
+    st = check_ollama_status(ollama_url)
+    if st["ollama_available"] and st["installed_tags"]:
+        chosen_tag = None
+        if model_id and any(t.lower() == model_id.lower() for t in st["installed_tags"]):
+            chosen_tag = model_id
+        else:
+            for tag in st["installed_tags"]:
+                if "flux-3-image-klein-pup" in tag.lower() or "qwen" in tag.lower() or "llava" in tag.lower() or "minicpm" in tag.lower():
+                    chosen_tag = tag
+                    break
+            if not chosen_tag:
+                chosen_tag = st["installed_tags"][0]
+
+        if chosen_tag:
+            base = validate_ollama_url(ollama_url)
+            if has_images:
+                user_msg: Dict[str, Any] = {
+                    "role": "user",
+                    "content": (
+                        "Reference images follow in order (the first image, the second image, ...).\n"
+                        f"User request: {clean_prompt}\nOutput the caption."
+                    ),
+                    "images": images_b64,
+                }
+                sys_content = sys_prompts["i2i"]
+                pres_pen = 0.0
+            else:
+                user_msg = {"role": "user", "content": formatted_request}
+                sys_content = sys_prompts["t2i"]
+                pres_pen = 1.5
+
+            resp = _http_json(
+                f"{base}/api/chat",
+                method="POST",
+                payload={
+                    "model": chosen_tag,
+                    "stream": False,
+                    "keep_alive": keep_alive or "0s",
+                    "think": False,
+                    "messages": [
+                        {"role": "system", "content": sys_content},
+                        user_msg,
+                    ],
+                    "options": {
+                        "temperature": 1.0,
+                        "top_k": 1,
+                        "top_p": 0.95,
+                        "presence_penalty": pres_pen,
+                        "repeat_penalty": 1.0,
+                        "num_predict": 600,
+                    },
+                },
+                timeout=max(5.0, float(timeout_sec)),
+            )
+            msg = resp.get("message") or {}
+            content = str(msg.get("content") or resp.get("response") or "").strip()
+            content = re.sub(r"<think>[\s\S]*?</think>", "", content, flags=re.IGNORECASE).strip()
+            if content:
+                return {
+                    "prompt": content[:2000],
+                    "source": "ollama_pup",
+                    "model": chosen_tag,
+                }
+
+    # 3. Deterministic BFL-style local caption expansion fallback (works offline with zero models)
+    aspect_hint = (
+        "wide horizontal composition"
+        if width > height * 1.15
+        else ("tall vertical composition" if height > width * 1.15 else "balanced square composition")
+    )
+    expanded = (
+        f"Full-color high-detail image, {aspect_hint}. {clean_prompt.rstrip('.')}. "
+        "Crisp subject boundaries, natural coherent lighting, accurate anatomy and proportions, "
+        "rich material textures, clean background separation."
+    )
+    return {
+        "prompt": expanded,
+        "source": "heuristic_pup",
+        "model": None,
+        "warnings": [
+            "FLUX.3 Prompt Upsampler model is not installed yet — used local template expansion. "
+            "You can download FLUX.3 Prompt Upsampler (Nunchaku SVDQ or Unsloth GGUF) in the Inpaint Assistant."
+        ],
+    }
+
+
 def unload_vision_model(ollama_url: str, model_id: Optional[str] = None, timeout: float = 3.0) -> bool:
     """Explicitly unload the active VLM from Ollama VRAM before starting diffusion."""
-    if not model_id:
+    if not model_id or model_id == "flux3-pup-nunchaku":
         return False
     try:
         base = validate_ollama_url(ollama_url)
@@ -256,16 +612,74 @@ def unload_vision_model(ollama_url: str, model_id: Optional[str] = None, timeout
         return False
 
 
+def _download_hf_vision_model(
+    entry: Dict[str, Any],
+    job_id: str,
+    models_dir: Optional[Path] = None,
+    hf_token: Optional[str] = None,
+    progress_callback: Optional[Callable[[float, str], None]] = None,
+) -> None:
+    """Download a HuggingFace-hosted vision/PUP model (Nunchaku SVDQ or Unsloth GGUF) into ``models/cache/<local_dir>``."""
+    from huggingface_hub import hf_hub_download
+
+    model_id = entry["id"]
+    repo_id = entry["repo_id"]
+    base_dir = (models_dir or (Path(__file__).resolve().parent.parent / "models" / "cache")).resolve()
+    target_dir = base_dir / entry["local_dir"]
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    files_to_fetch = list(entry.get("support_files") or []) + [entry["primary_file"]]
+    total_files = len(files_to_fetch)
+
+    for idx, fname in enumerate(files_to_fetch, 1):
+        pct = round((idx - 1) / max(1, total_files) * 100.0, 1)
+        detail = f"Downloading {fname} ({idx}/{total_files})..."
+        set_download_state(
+            model_id,
+            status="downloading",
+            job_id=job_id,
+            progress=pct,
+            detail=detail,
+        )
+        if progress_callback:
+            try:
+                progress_callback(pct, detail)
+            except Exception:
+                pass
+        hf_hub_download(
+            repo_id=repo_id,
+            filename=fname,
+            local_dir=str(target_dir),
+            token=hf_token or os.environ.get("HF_TOKEN") or None,
+        )
+
+    set_download_state(
+        model_id,
+        status="installed",
+        job_id=job_id,
+        progress=100.0,
+        detail="Installed",
+    )
+    if progress_callback:
+        try:
+            progress_callback(100.0, "Installed")
+        except Exception:
+            pass
+
+
 def start_vision_model_download(
     ollama_url: str,
     model_id: str,
     progress_callback: Optional[Callable[[float, str], None]] = None,
+    models_dir: Optional[Path] = None,
+    hf_token: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Start (or attach to) an asynchronous Ollama ``/api/pull`` job."""
+    """Start (or attach to) an asynchronous download job for a VLM or FLUX.3 PUP model."""
     existing = get_download_state(model_id)
     if existing and existing.get("status") == "downloading":
         return existing
 
+    entry = get_catalog_entry(model_id)
     state = set_download_state(
         model_id,
         status="downloading",
@@ -273,18 +687,41 @@ def start_vision_model_download(
         detail="Starting download...",
     )
     job_id = state["job_id"]
-    base = validate_ollama_url(ollama_url)
 
     def _worker() -> None:
-        url = f"{base}/api/pull"
-        data = json.dumps({"name": model_id, "stream": True}).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
-        )
         try:
+            # Nunchaku PUP always downloads directly from HuggingFace
+            if entry and entry.get("provider") == "nunchaku":
+                _download_hf_vision_model(
+                    entry,
+                    job_id=job_id,
+                    models_dir=models_dir,
+                    hf_token=hf_token,
+                    progress_callback=progress_callback,
+                )
+                return
+
+            # GGUF PUP: if Ollama is running, pull via Ollama AND/OR download GGUF from HF if Ollama is offline
+            st = check_ollama_status(ollama_url)
+            if entry and entry.get("provider") == "gguf" and not st["ollama_available"]:
+                _download_hf_vision_model(
+                    entry,
+                    job_id=job_id,
+                    models_dir=models_dir,
+                    hf_token=hf_token,
+                    progress_callback=progress_callback,
+                )
+                return
+
+            base = validate_ollama_url(ollama_url)
+            url = f"{base}/api/pull"
+            data = json.dumps({"name": model_id, "stream": True}).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
             with urllib.request.urlopen(req, timeout=600) as resp:
                 for raw_line in resp:
                     line = raw_line.decode("utf-8", errors="replace").strip()
@@ -321,7 +758,7 @@ def start_vision_model_download(
                 detail="Installed",
             )
         except Exception as exc:
-            logger.warning("[vision] Pull failed for %s: %s", model_id, exc)
+            logger.warning("[vision] Download failed for %s: %s", model_id, exc)
             set_download_state(
                 model_id,
                 status="error",
@@ -331,19 +768,41 @@ def start_vision_model_download(
                 error=str(exc),
             )
 
-    t = threading.Thread(target=_worker, name=f"ollama-pull-{model_id}", daemon=True)
+    t = threading.Thread(target=_worker, name=f"vision-dl-{model_id}", daemon=True)
     t.start()
     return state
 
 
-def delete_vision_model(ollama_url: str, model_id: str, timeout: float = 10.0) -> bool:
-    """Delete a model from Ollama via ``DELETE /api/delete``."""
-    base = validate_ollama_url(ollama_url)
-    _http_json(
-        f"{base}/api/delete",
-        method="DELETE",
-        payload={"name": model_id},
-        timeout=timeout,
-    )
+def delete_vision_model(
+    ollama_url: str,
+    model_id: str,
+    timeout: float = 10.0,
+    models_dir: Optional[Path] = None,
+) -> bool:
+    """Delete a vision/PUP model from local HF cache and/or Ollama."""
+    entry = get_catalog_entry(model_id)
+    removed_local = False
+    if entry and entry.get("local_dir") and entry.get("primary_file"):
+        base_dir = (models_dir or (Path(__file__).resolve().parent.parent / "models" / "cache")).resolve()
+        primary_path = base_dir / entry["local_dir"] / entry["primary_file"]
+        if primary_path.is_file():
+            primary_path.unlink(missing_ok=True)
+            removed_local = True
+
+    if entry and entry.get("provider") == "nunchaku":
+        clear_download_state(model_id)
+        return True
+
+    try:
+        base = validate_ollama_url(ollama_url)
+        _http_json(
+            f"{base}/api/delete",
+            method="DELETE",
+            payload={"name": model_id},
+            timeout=timeout,
+        )
+    except VisionRuntimeError:
+        if not removed_local:
+            raise
     clear_download_state(model_id)
     return True
