@@ -14087,6 +14087,20 @@ def create_app() -> FastAPI:
 
 
 
+def find_available_port(host: str, start_port: int, max_attempts: int = 50) -> int:
+    """Find the first available port starting from start_port."""
+    import socket
+    for port in range(start_port, start_port + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.2)
+            try:
+                s.bind((host if host != "0.0.0.0" else "127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    return start_port
+
+
 def _free_port_if_in_use(host: str, port: int) -> None:
 
 
@@ -14465,12 +14479,22 @@ def main():
 
         default=7860,
 
-
-
         help="Port to bind to (default: 7860)",
 
+    )
 
+    parser.add_argument(
+        "--auto-port",
+        action="store_true",
+        default=True,
+        help="Automatically pick the next free port if the requested port is already in use (default: enabled)",
+    )
 
+    parser.add_argument(
+        "--no-auto-port",
+        dest="auto_port",
+        action="store_false",
+        help="Disable automatic port fallback; fail if the requested port is busy",
     )
 
 
@@ -14511,7 +14535,24 @@ def main():
 
 
 
-    _free_port_if_in_use(args.host, args.port)
+    import socket
+    requested_port = args.port
+    is_busy = False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.2)
+        try:
+            s.bind((args.host if args.host != "0.0.0.0" else "127.0.0.1", args.port))
+        except OSError:
+            is_busy = True
+
+    if is_busy:
+        if args.auto_port:
+            free_port = find_available_port(args.host, requested_port + 1)
+            print(f"[startup] Port {requested_port} is already in use by another process (e.g. ComfyUI / Automatic1111 / WebUI).")
+            print(f"[startup] Automatically switched to next free port: http://{args.host}:{free_port}")
+            args.port = free_port
+        else:
+            _free_port_if_in_use(args.host, args.port)
 
 
 

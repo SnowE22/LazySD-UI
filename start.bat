@@ -36,9 +36,9 @@ if errorlevel 1 (
 )
 
 echo.
-echo Starting LazySD UI on http://127.0.0.1:7860
+echo Starting LazySD UI...
 echo Press Ctrl+C to stop.
 echo.
-"%PY_CMD%" app.py
+"%PY_CMD%" app.py %*
 
 pause
