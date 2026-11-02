@@ -972,7 +972,8 @@ class SDCppWorker:
             cmd.extend(["--eta", str(noise_val)])
 
         # Logging
-        logger.info(f"[sd_cpp] Launching SD.CPP: {width}x{height}, steps={request.steps}, cfg={cfg_val}, sampler={mapped_sampler}, eta={noise_val}, seed={seed}")
+        crop_msg = f" (crop from {width}x{height} source)" if mask_ctx is not None else ""
+        logger.info(f"[sd_cpp] Launching SD.CPP: {engine_width}x{engine_height}{crop_msg}, steps={request.steps}, cfg={cfg_val}, sampler={mapped_sampler}, eta={noise_val}, seed={seed}")
         logger.debug(f"[sd_cpp] CLI args: {' '.join(cmd)}")
 
         # 4. Environment PATH

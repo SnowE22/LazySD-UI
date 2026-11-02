@@ -995,7 +995,8 @@ class Worker:
                 env["HF_TOKEN"] = settings.huggingface_token
                 env["HUGGING_FACE_HUB_TOKEN"] = settings.huggingface_token
 
-            print(f"[worker] Launching QuantFunc engine (v{engine_ver}): width={width}, height={height}, steps={request.steps}, backend={request.backend}")
+            crop_msg = f" (crop from {width}x{height} source)" if mask_ctx is not None else ""
+            print(f"[worker] Launching QuantFunc engine (v{engine_ver}): width={engine_width}, height={engine_height}{crop_msg}, steps={request.steps}, backend={request.backend}")
             print(f"[worker] CLI args: {' '.join(args)}")
             print(f"[worker] subprocess PATH (first 3): {new_path_parts[:3]}")
             print(f"[worker] subprocess cwd: {engine_dir}")

@@ -1046,7 +1046,10 @@ class ExtrasWorker:
         start_time = time.time()
         sampler = getattr(request, "sampler", None) or "euler"
         eta = float(getattr(request, "noise", 0.0) or 0.0)
-        print(f"[INFO] [SVDQ] Launching {engine.upper()}: {width}x{height}, steps={steps}, cfg={cfg}, sampler={sampler}, eta={eta}, seed={seed}", flush=True)
+        actual_w = payload["width"]
+        actual_h = payload["height"]
+        crop_msg = f" (crop from {width}x{height} source)" if mask_ctx else ""
+        print(f"[INFO] [SVDQ] Launching {engine.upper()}: {actual_w}x{actual_h}{crop_msg}, steps={steps}, cfg={cfg}, sampler={sampler}, eta={eta}, seed={seed}", flush=True)
         emit(ProgressEvent(status=JobStatus.LOADING, progress=0.05, message=f"Starting {engine.upper()} pipeline..."))
 
         proc = subprocess.Popen(
