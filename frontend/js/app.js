@@ -553,6 +553,11 @@ const App = {
         : `<span class="state-badge missing">✗ ${escapeHtml(t("common.not_installed"))}</span>`;
     }
 
+    if (config.ollama) {
+      this.state.ollama = config.ollama;
+      this.renderOllamaEngineStatus();
+    }
+
     const qfToggleEl = document.getElementById("setting-enable-quantfunc");
     const qfBadgeEl = document.getElementById("setting-qf-toggle-badge");
     const qfEnabled = !!(this.state.settings?.enable_quantfunc_models);
@@ -7150,6 +7155,104 @@ const App = {
         btn.textContent = origText;
       }
       this.toast("error", e.message);
+    }
+  },
+
+  renderOllamaEngineStatus() {
+    const o = this.state.ollama;
+    const badge = document.getElementById("setting-ollama-status");
+    const installBtn = document.getElementById("btn-install-ollama");
+    const startBtn = document.getElementById("btn-start-ollama");
+    const stopBtn = document.getElementById("btn-stop-ollama");
+    const pullBtn = document.getElementById("btn-pull-qwenvl");
+    if (!badge) return;
+
+    if (!o || !o.installed) {
+      badge.innerHTML = `<span class="state-badge missing">Не установлен</span>`;
+      if (installBtn) installBtn.style.display = "inline-flex";
+      if (startBtn) startBtn.style.display = "none";
+      if (stopBtn) stopBtn.style.display = "none";
+      if (pullBtn) pullBtn.style.display = "none";
+    } else if (o.running) {
+      const qwenBadge = o.has_qwen_vl ? " · Qwen2.5-VL ✓" : "";
+      const modelsCount = (o.models || []).length;
+      badge.innerHTML = `<span class="state-badge installed">✓ Работает (v${escapeHtml(o.version || '0.40')}, моделей: ${modelsCount}${qwenBadge})</span>`;
+      if (installBtn) installBtn.style.display = "none";
+      if (startBtn) startBtn.style.display = "none";
+      if (stopBtn) stopBtn.style.display = "inline-flex";
+      if (pullBtn) pullBtn.style.display = o.has_qwen_vl ? "none" : "inline-flex";
+    } else {
+      badge.innerHTML = `<span class="state-badge missing" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);">⏸ Остановлен (v${escapeHtml(o.version || '0.40')})</span>`;
+      if (installBtn) installBtn.style.display = "none";
+      if (startBtn) { startBtn.style.display = "inline-flex"; startBtn.textContent = "Запустить"; }
+      if (stopBtn) stopBtn.style.display = "none";
+      if (pullBtn) pullBtn.style.display = "none";
+    }
+  },
+
+  async startOllama(btnEl) {
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Запуск..."; }
+    try {
+      this.toast("info", "Запуск Ollama daemon...");
+      const res = await this.apiPost("/api/engine/ollama/start");
+      if (res.running) {
+        this.toast("success", "✓ Ollama успешно запущена на порту 11434");
+      } else {
+        this.toast("error", "Не удалось запустить Ollama");
+      }
+      await this.refreshConfig();
+      if (this.loadInpaintVisionModels) await this.loadInpaintVisionModels();
+    } catch (e) {
+      this.toast("error", "Ошибка запуска Ollama: " + e.message);
+    } finally {
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = "Запустить"; }
+    }
+  },
+
+  async stopOllama(btnEl) {
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Остановка..."; }
+    try {
+      await this.apiPost("/api/engine/ollama/stop");
+      this.toast("info", "Ollama остановлена");
+      await this.refreshConfig();
+      if (this.loadInpaintVisionModels) await this.loadInpaintVisionModels();
+    } catch (e) {
+      this.toast("error", "Ошибка: " + e.message);
+    } finally {
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = "Остановить"; }
+    }
+  },
+
+  async installOllama(btnEl) {
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Установка..."; }
+    try {
+      this.toast("info", "Загрузка и установка Ollama (~1.5 GB)...");
+      const res = await this.apiPost("/api/engine/download", { engine: "ollama" });
+      this.toast("success", res.message || "Ollama установлена ✓");
+      await this.startOllama();
+    } catch (e) {
+      this.toast("error", "Ошибка установки Ollama: " + e.message);
+    } finally {
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = "Установить"; }
+    }
+  },
+
+  async pullQwenVL(btnEl) {
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Загрузка Qwen..."; }
+    try {
+      this.toast("info", "Скачивание Qwen2.5-VL 3B в Ollama...");
+      const res = await this.apiPost("/api/vision/models/qwen2.5vl:3b/download");
+      if (res?.job_id && this.startDownloadPolling) {
+        this.startDownloadPolling(res.job_id, {
+          label: "VLM: Qwen2.5-VL 3B (Ollama)",
+          kind: "vision",
+          modelId: "qwen2.5vl:3b",
+        });
+      }
+    } catch (e) {
+      this.toast("error", "Ошибка скачивания: " + e.message);
+    } finally {
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = "⬇ Qwen2.5-VL"; }
     }
   },
 };

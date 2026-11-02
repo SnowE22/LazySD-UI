@@ -2574,6 +2574,11 @@ def create_app() -> FastAPI:
 
             installed_engines.append("sdnq")
 
+        from backend.ollama_engine import is_ollama_installed, get_ollama_status_dict
+        ollama_st = get_ollama_status_dict(getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434"))
+        if ollama_st.get("installed"):
+            installed_engines.append("ollama")
+
 
 
 
@@ -2773,6 +2778,8 @@ def create_app() -> FastAPI:
 
 
             "sdnq_version": get_sdnq_version(),
+
+            "ollama": ollama_st,
 
 
 
@@ -9980,6 +9987,16 @@ def create_app() -> FastAPI:
 
                 }
 
+            elif engine_type == "ollama":
+                from backend.ollama_engine import download_and_extract_portable_ollama
+                binary_path = await asyncio.to_thread(download_and_extract_portable_ollama, force=bool(body.get("force", False)))
+                return {
+                    "status": "ok",
+                    "engine": "ollama",
+                    "path": str(binary_path),
+                    "message": f"Ollama installed: {binary_path}",
+                }
+
 
 
             elif engine_type == "sdnq":
@@ -10086,13 +10103,42 @@ def create_app() -> FastAPI:
             elif engine_type in ("nunchaku", "orbitquant"):
                 from backend.extras import uninstall_component
                 result = await asyncio.to_thread(uninstall_component, engine_type)
+            elif engine_type == "ollama":
+                from backend.ollama_engine import stop_ollama_server
+                await asyncio.to_thread(stop_ollama_server)
+                import shutil
+                from pathlib import Path
+                target_dir = Path(__file__).resolve().parent / "bin" / "windows" / "ollama"
+                if target_dir.is_dir():
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                result = {"engine": "ollama", "freed_mb": 1600}
             else:
-                raise HTTPException(400, "engine must be sd_cpp, sdnq, nunchaku, or orbitquant")
+                raise HTTPException(400, "engine must be sd_cpp, sdnq, nunchaku, orbitquant, or ollama")
             return {"status": "ok", **result}
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(500, f"Engine uninstall failed: {e}")
+
+    @app.get("/api/engine/ollama/status")
+    async def api_ollama_status():
+        from backend.ollama_engine import get_ollama_status_dict
+        settings = get_settings()
+        return get_ollama_status_dict(getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434"))
+
+    @app.post("/api/engine/ollama/start")
+    async def api_ollama_start():
+        from backend.ollama_engine import start_ollama_server
+        settings = get_settings()
+        url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
+        ok = await asyncio.to_thread(start_ollama_server, url)
+        return {"status": "ok" if ok else "error", "running": ok}
+
+    @app.post("/api/engine/ollama/stop")
+    async def api_ollama_stop():
+        from backend.ollama_engine import stop_ollama_server
+        ok = await asyncio.to_thread(stop_ollama_server)
+        return {"status": "ok" if ok else "error", "running": False}
 
 
 

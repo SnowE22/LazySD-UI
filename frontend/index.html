@@ -2110,6 +2110,38 @@
 
           </div>
 
+          <!-- Ollama (VLM Vision Server) -->
+
+          <div class="setting-row">
+
+            <div class="setting-label">
+
+              <strong>Ollama (VLM Vision Server)</strong><br>
+
+              <small style="color: var(--text-dim);">Локальный AI-сервер для Vision-моделей зрения (Qwen2.5-VL 3B/7B, MiniCPM-V, LLaVA) в Inpaint и анализе изображений (порт 11434).</small>
+
+            </div>
+
+            <div class="setting-value" id="setting-ollama-status">
+
+              <span class="state-badge missing">Не установлен</span>
+
+            </div>
+
+            <div class="setting-actions" style="display: flex; gap: 6px; flex-wrap: wrap;">
+
+              <button class="setting-btn" id="btn-install-ollama" onclick="App.installOllama(this)">Установить</button>
+
+              <button class="setting-btn" id="btn-start-ollama" onclick="App.startOllama(this)">Запустить</button>
+
+              <button class="setting-btn" id="btn-pull-qwenvl" onclick="App.pullQwenVL(this)" title="Скачать модель Qwen2.5-VL 3B в Ollama">⬇ Qwen2.5-VL</button>
+
+              <button class="setting-btn danger" id="btn-stop-ollama" onclick="App.stopOllama(this)" style="display: none;">Остановить</button>
+
+            </div>
+
+          </div>
+
           <!-- Subhead: Экспериментальные движки (Legacy) -->
 
           <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin: 16px 0 10px 0; font-weight: 600;" data-i18n="settings.engine.legacy_subhead">
