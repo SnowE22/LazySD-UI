@@ -90,7 +90,7 @@ function layerById(state, id) {
 }
 
 // ---------- mask layer plumbing ----------
-function createMaskLayer(state, name) {
+function createMaskLayer(state, name, id = null) {
   const width = state.source?.width || 1024;
   const height = state.source?.height || 1024;
 
@@ -102,12 +102,16 @@ function createMaskLayer(state, name) {
   viewCanvas.width = width;
   viewCanvas.height = height;
   viewCanvas.className = "inpaint-mask-canvas";
-  viewCanvas.dataset.layerId = "";
 
-  const surface = createMaskSurface(dataCanvas, { visualCanvas: viewCanvas });
+  const surface = createMaskSurface(dataCanvas, {
+    visualCanvas: viewCanvas,
+    brushSize: state?.brushSize || MASK_DEFAULT_BRUSH_SIZE,
+    softness: state?.softness ?? 0.5,
+    mode: state?.mode || "brush",
+  });
 
   const layer = {
-    id: nextLayerId("mask"),
+    id: id || nextLayerId("mask"),
     type: "mask",
     name: name || t("inpaint.layer.mask", "Маска"),
     visible: true,
@@ -252,10 +256,16 @@ async function restoreSnapshot(app, snapshot) {
         url: source.url,
       });
     } else if (saved.type === "mask") {
-      const layer = createMaskLayer(state, saved.name);
+      const layer = createMaskLayer(state, saved.name, saved.id);
       layer.id = saved.id;
+      if (layer.viewCanvas) layer.viewCanvas.dataset.layerId = saved.id;
       layer.visible = saved.visible;
       layer.opacity = saved.opacity;
+      if (layer.surface) {
+        layer.surface.mode = state.mode || "brush";
+        layer.surface.brushSize = state.brushSize || MASK_DEFAULT_BRUSH_SIZE;
+        layer.surface.softness = state.softness ?? 0.5;
+      }
       if (saved.maskDataUrl) await layer.surface.loadDataURL(saved.maskDataUrl);
       attachMaskLayerView(app, layer);
       restored.push(layer);
@@ -295,13 +305,23 @@ async function restoreSnapshot(app, snapshot) {
 
   state.layers = restored;
   state.activeLayerId = snapshot.activeLayerId;
-  if (!layerById(state, state.activeLayerId)) {
+  const curActive = layerById(state, state.activeLayerId);
+  if (!curActive || curActive.type !== "mask") {
     const fallback = state.layers.find((l) => l.type === "mask") || state.layers[0] || null;
     state.activeLayerId = fallback ? fallback.id : null;
+  }
+  const curMask = activeMaskLayer(state);
+  if (curMask && curMask.surface) {
+    curMask.surface.mode = state.mode || "brush";
+    curMask.surface.brushSize = state.brushSize || MASK_DEFAULT_BRUSH_SIZE;
+    curMask.surface.softness = state.softness ?? 0.5;
   }
   refreshMaskLayerViews(app);
   renderInpaintComposite(app);
   renderInpaintLayersUI(app);
+  syncInpaintGeometry(app);
+  updateInpaintStatus(app);
+  updateBrushCursor(app);
 }
 
 export function undoInpaint(appRef = null) {
@@ -1211,9 +1231,9 @@ export function initInpaintMaskEvents(appRef = null) {
 
   const layerFromEvent = (event) => {
     const el = event.target.closest?.(".inpaint-mask-canvas");
-    if (!el) return null;
+    if (!el) return activeMaskLayer(state);
     const id = el.dataset.layerId;
-    return id ? layerById(state, id) : null;
+    return (id ? layerById(state, id) : null) || activeMaskLayer(state);
   };
 
   stack.addEventListener("pointerdown", (event) => {
@@ -1233,10 +1253,10 @@ export function initInpaintMaskEvents(appRef = null) {
   });
 
   stack.addEventListener("pointermove", (event) => {
-    const layer = layerFromEvent(event);
+    const layer = layerFromEvent(event) || activeMaskLayer(state);
     if (layer) {
       const point = pointerToCanvasPoint(layer.viewCanvas, event);
-      if (point) {
+      if (point && painting) {
         layer.surface.continueStroke(point.x, point.y);
       }
       updateBrushCursor(app);

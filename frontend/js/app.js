@@ -12146,7 +12146,7 @@ Object.assign(App, {
     return state.layers.find((l) => l.id === id) || null;
   },
 
-  createInpaintMaskLayer(state, name) {
+  createInpaintMaskLayer(state, name, id = null) {
     const width = state.source?.width || 1024;
     const height = state.source?.height || 1024;
 
@@ -12158,12 +12158,16 @@ Object.assign(App, {
     viewCanvas.width = width;
     viewCanvas.height = height;
     viewCanvas.className = "inpaint-mask-canvas";
-    viewCanvas.dataset.layerId = "";
 
-    const surface = this.createMaskSurface(dataCanvas, { visualCanvas: viewCanvas });
+    const surface = this.createMaskSurface(dataCanvas, {
+      visualCanvas: viewCanvas,
+      brushSize: state?.brushSize || 64,
+      softness: state?.softness ?? 0.5,
+      mode: state?.mode || "brush",
+    });
 
     const layer = {
-      id: `mask_${Date.now().toString(36)}_${(this._inpaintLayerSeq = (this._inpaintLayerSeq || 0) + 1).toString(36)}`,
+      id: id || `mask_${Date.now().toString(36)}_${(this._inpaintLayerSeq = (this._inpaintLayerSeq || 0) + 1).toString(36)}`,
       type: "mask",
       name: name || this.maskT("inpaint.layer.mask", "Маска"),
       visible: true,
@@ -12304,10 +12308,16 @@ Object.assign(App, {
           url: source.url,
         });
       } else if (saved.type === "mask") {
-        const layer = this.createInpaintMaskLayer(state, saved.name);
+        const layer = this.createInpaintMaskLayer(state, saved.name, saved.id);
         layer.id = saved.id;
+        if (layer.viewCanvas) layer.viewCanvas.dataset.layerId = saved.id;
         layer.visible = saved.visible;
         layer.opacity = saved.opacity;
+        if (layer.surface) {
+          layer.surface.mode = state.mode || "brush";
+          layer.surface.brushSize = state.brushSize || 64;
+          layer.surface.softness = state.softness ?? 0.5;
+        }
         if (saved.maskDataUrl) await layer.surface.loadDataURL(saved.maskDataUrl);
         this.attachInpaintMaskLayerView(layer);
         restored.push(layer);
@@ -12347,13 +12357,23 @@ Object.assign(App, {
 
     state.layers = restored;
     state.activeLayerId = snapshot.activeLayerId;
-    if (!this.getInpaintLayerById(state.activeLayerId)) {
+    const curActive = this.getInpaintLayerById(state.activeLayerId);
+    if (!curActive || curActive.type !== "mask") {
       const fallback = state.layers.find((l) => l.type === "mask") || state.layers[0] || null;
       state.activeLayerId = fallback ? fallback.id : null;
+    }
+    const curMask = this.getActiveInpaintMaskLayer();
+    if (curMask && curMask.surface) {
+      curMask.surface.mode = state.mode || "brush";
+      curMask.surface.brushSize = state.brushSize || 64;
+      curMask.surface.softness = state.softness ?? 0.5;
     }
     this.refreshInpaintMaskLayerViews();
     this.renderInpaintComposite();
     this.renderInpaintLayersUI();
+    this.syncInpaintGeometry();
+    this.updateInpaintStatus();
+    this.updateInpaintBrushCursor();
   },
 
   undoInpaint() {
@@ -13265,9 +13285,9 @@ Object.assign(App, {
 
     const layerFromEvent = (event) => {
       const el = event.target.closest?.(".inpaint-mask-canvas");
-      if (!el) return null;
+      if (!el) return this.getActiveInpaintMaskLayer();
       const id = el.dataset.layerId;
-      return id ? this.getInpaintLayerById(id) : null;
+      return (id ? this.getInpaintLayerById(id) : null) || this.getActiveInpaintMaskLayer();
     };
 
     stack.addEventListener("pointerdown", (event) => {
@@ -13287,10 +13307,10 @@ Object.assign(App, {
     });
 
     stack.addEventListener("pointermove", (event) => {
-      const layer = layerFromEvent(event);
+      const layer = layerFromEvent(event) || this.getActiveInpaintMaskLayer();
       if (!layer) return;
       const point = this.pointerToCanvasPoint(layer.viewCanvas, event);
-      if (point) layer.surface.continueStroke(point.x, point.y);
+      if (point && painting) layer.surface.continueStroke(point.x, point.y);
       this.updateInpaintBrushCursor();
       const cursor = document.getElementById("inpaint-brush-cursor");
       if (cursor) {
