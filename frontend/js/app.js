@@ -12362,7 +12362,7 @@ Object.assign(App, {
       const fallback = state.layers.find((l) => l.type === "mask") || state.layers[0] || null;
       state.activeLayerId = fallback ? fallback.id : null;
     }
-    const curMask = this.getActiveInpaintMaskLayer();
+    const curMask = this.getInpaintActiveMaskLayer();
     if (curMask && curMask.surface) {
       curMask.surface.mode = state.mode || "brush";
       curMask.surface.brushSize = state.brushSize || 64;
@@ -13285,9 +13285,9 @@ Object.assign(App, {
 
     const layerFromEvent = (event) => {
       const el = event.target.closest?.(".inpaint-mask-canvas");
-      if (!el) return this.getActiveInpaintMaskLayer();
+      if (!el) return this.getInpaintActiveMaskLayer();
       const id = el.dataset.layerId;
-      return (id ? this.getInpaintLayerById(id) : null) || this.getActiveInpaintMaskLayer();
+      return (id ? this.getInpaintLayerById(id) : null) || this.getInpaintActiveMaskLayer();
     };
 
     stack.addEventListener("pointerdown", (event) => {
@@ -13307,7 +13307,7 @@ Object.assign(App, {
     });
 
     stack.addEventListener("pointermove", (event) => {
-      const layer = layerFromEvent(event) || this.getActiveInpaintMaskLayer();
+      const layer = layerFromEvent(event) || this.getInpaintActiveMaskLayer();
       if (!layer) return;
       const point = this.pointerToCanvasPoint(layer.viewCanvas, event);
       if (point && painting) layer.surface.continueStroke(point.x, point.y);
