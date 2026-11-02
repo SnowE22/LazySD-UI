@@ -5868,7 +5868,19 @@ def create_app() -> FastAPI:
                 else:
 
 
-                    downloaded = Path(source.download_file(repo_id, file_path, local_dir))
+                    def _on_comp_progress(dl_b, total_b, speed):
+                        pct = (dl_b / float(total_b)) if total_b > 0 else 0.0
+                        speed_mb = (speed or 0.0) / (1024 * 1024)
+                        speed_str = f" ({speed_mb:.1f} MB/s)" if speed_mb >= 0.1 else ""
+                        STATE.update_job(job_id, ProgressEvent(
+                            status=JobStatus.DOWNLOADING, progress=pct,
+                            downloaded_bytes=dl_b, total_bytes=total_b, speed_bps=speed,
+                            message=f"Downloading {role}: {file_path}{speed_str}",
+                        ))
+
+                    downloaded = Path(source.download_file(
+                        repo_id, file_path, local_dir, progress_callback=_on_comp_progress, job_id=job_id
+                    ))
 
 
                     if role == "vae" and downloaded.resolve() != destination.resolve() and not destination.is_file():
@@ -6921,26 +6933,24 @@ def create_app() -> FastAPI:
 
 
 
+                        def _on_te_progress(dl_b, total_b, speed):
+                            item_pct = (dl_b / float(total_b)) if total_b > 0 else 0.0
+                            overall = progress_base + item_pct * (progress_end - progress_base)
+                            speed_mb = (speed or 0.0) / (1024 * 1024)
+                            speed_str = f" ({speed_mb:.1f} MB/s)" if speed_mb >= 0.1 else ""
+                            STATE.update_job(job_id, ProgressEvent(
+                                status=JobStatus.DOWNLOADING, progress=overall,
+                                downloaded_bytes=dl_b, total_bytes=total_b, speed_bps=speed,
+                                message=f"[{i+1}/{total_tasks}] Downloading {kind}: {file_path}{speed_str}",
+                            ))
+
                         te_src.download_file(
-
-
-
                             repo_id=te_repo,
-
-
-
                             file_path=file_path,
-
-
-
                             local_dir=target_dest_dir,
-
-
-
                             revision="main",
-
-
-
+                            progress_callback=_on_te_progress,
+                            job_id=job_id,
                         )
 
 
@@ -6985,26 +6995,24 @@ def create_app() -> FastAPI:
 
 
 
+                        def _on_target_progress(dl_b, total_b, speed):
+                            item_pct = (dl_b / float(total_b)) if total_b > 0 else 0.0
+                            overall = progress_base + item_pct * (progress_end - progress_base)
+                            speed_mb = (speed or 0.0) / (1024 * 1024)
+                            speed_str = f" ({speed_mb:.1f} MB/s)" if speed_mb >= 0.1 else ""
+                            STATE.update_job(job_id, ProgressEvent(
+                                status=JobStatus.DOWNLOADING, progress=overall,
+                                downloaded_bytes=dl_b, total_bytes=total_b, speed_bps=speed,
+                                message=f"[{i+1}/{total_tasks}] Downloading {kind}: {file_path}{speed_str}",
+                            ))
+
                         target_source.download_file(
-
-
-
                             repo_id=target_repo,
-
-
-
                             file_path=file_path,
-
-
-
                             local_dir=local_repo_dir,
-
-
-
                             revision=revision,
-
-
-
+                            progress_callback=_on_target_progress,
+                            job_id=job_id,
                         )
 
 
@@ -9478,6 +9486,11 @@ def create_app() -> FastAPI:
 
         was_active = STATE.cancel_job(job_id)
 
+        try:
+            from backend.downloader import get_download_manager
+            get_download_manager().cancel(job_id)
+        except Exception:
+            pass
 
         if was_active and job.get("kind") == "generation":
 
@@ -9495,6 +9508,84 @@ def create_app() -> FastAPI:
 
 
         return {"status": "cancelled", "was_active": bool(was_active)}
+
+
+    @app.post("/api/jobs/{job_id}/pause")
+    async def api_job_pause(job_id: str, request: Request = None):
+        caller = _resolve_caller(request)
+        job = STATE.get_job(job_id)
+        if not job:
+            raise HTTPException(404, f"Job not found: {job_id}")
+        if caller.get("is_guest", False) and job.get("owner_id") != caller.get("id"):
+            raise HTTPException(403, "Нельзя приостановить задачу другого пользователя.")
+
+        from backend.downloader import get_download_manager
+        mgr = get_download_manager()
+        paused = mgr.pause(job_id)
+        if paused:
+            STATE.update_job(job_id, ProgressEvent(
+                status="paused",
+                message="Загрузка приостановлена",
+            ))
+            return {"status": "paused", "job_id": job_id}
+        return {"status": "error", "message": "Загрузка не может быть приостановлена"}
+
+
+    @app.post("/api/jobs/{job_id}/resume")
+    async def api_job_resume(job_id: str, request: Request = None):
+        caller = _resolve_caller(request)
+        job = STATE.get_job(job_id)
+        if not job:
+            raise HTTPException(404, f"Job not found: {job_id}")
+        if caller.get("is_guest", False) and job.get("owner_id") != caller.get("id"):
+            raise HTTPException(403, "Нельзя возобновить задачу другого пользователя.")
+
+        from backend.downloader import get_download_manager
+        mgr = get_download_manager()
+        resumed = mgr.resume(job_id)
+        if resumed:
+            STATE.update_job(job_id, ProgressEvent(
+                status="downloading",
+                message="Возобновление загрузки...",
+            ))
+            return {"status": "resumed", "job_id": job_id}
+        return {"status": "error", "message": "Загрузка не может быть возобновлена"}
+
+
+    @app.get("/api/downloads")
+    async def api_list_downloads():
+        from backend.downloader import get_download_manager
+        return get_download_manager().list_tasks()
+
+
+    @app.get("/api/downloads/{task_id}")
+    async def api_get_download(task_id: str):
+        from backend.downloader import get_download_manager
+        task = get_download_manager().get_task(task_id)
+        if not task:
+            raise HTTPException(404, f"Download task not found: {task_id}")
+        return task.to_dict()
+
+
+    @app.post("/api/downloads/{task_id}/pause")
+    async def api_pause_download(task_id: str):
+        from backend.downloader import get_download_manager
+        ok = get_download_manager().pause(task_id)
+        return {"status": "paused" if ok else "error", "task_id": task_id}
+
+
+    @app.post("/api/downloads/{task_id}/resume")
+    async def api_resume_download(task_id: str):
+        from backend.downloader import get_download_manager
+        ok = get_download_manager().resume(task_id)
+        return {"status": "resumed" if ok else "error", "task_id": task_id}
+
+
+    @app.post("/api/downloads/{task_id}/cancel")
+    async def api_cancel_download(task_id: str):
+        from backend.downloader import get_download_manager
+        ok = get_download_manager().cancel(task_id)
+        return {"status": "cancelled" if ok else "error", "task_id": task_id}
 
 
     # ---------- API: Settings ----------

@@ -2367,7 +2367,7 @@ const App = {
     const list = document.getElementById("downloads-list");
     if (!list) return;
     const entries = Object.values(this.state.downloads).sort((a, b) => b.startedAt - a.startedAt);
-    const activeStatuses = new Set(["queued", "initializing", "downloading", "loading"]);
+    const activeStatuses = new Set(["queued", "initializing", "downloading", "loading", "paused"]);
     const activeCount = entries.filter(e => activeStatuses.has(e.status)).length;
     const countEl = document.getElementById("downloads-active-count");
     if (countEl) {
@@ -2383,6 +2383,7 @@ const App = {
       initializing: "Подготовка",
       downloading: "Скачивание",
       loading: "Загрузка",
+      paused: "Пауза",
       complete: "Готово",
       error: "Ошибка",
       cancelled: "Отменено",
@@ -2390,10 +2391,23 @@ const App = {
     list.innerHTML = entries.map(entry => {
       const active = activeStatuses.has(entry.status);
       const pct = Math.round((entry.progress || 0) * 100);
-      const statusClass = entry.status === "error" ? "error" : (entry.status === "complete" ? "done" : (entry.status === "cancelled" ? "cancelled" : "active"));
-      const action = active
-        ? `<button type="button" class="download-cancel-btn" onclick="event.stopPropagation(); App.cancelDownload('${escapeHtml(entry.jobId)}')">Отменить</button>`
-        : `<button type="button" class="download-dismiss-btn" onclick="event.stopPropagation(); App.dismissDownload('${escapeHtml(entry.jobId)}')">Убрать</button>`;
+      const statusClass = entry.status === "error" ? "error" : (entry.status === "complete" ? "done" : (entry.status === "cancelled" ? "cancelled" : (entry.status === "paused" ? "paused" : "active")));
+      let action = "";
+      if (entry.status === "downloading") {
+        action = `
+          <button type="button" class="download-pause-btn" onclick="event.stopPropagation(); App.pauseDownload('${escapeHtml(entry.jobId)}')">⏸ Пауза</button>
+          <button type="button" class="download-cancel-btn" onclick="event.stopPropagation(); App.cancelDownload('${escapeHtml(entry.jobId)}')">✕</button>
+        `;
+      } else if (entry.status === "paused") {
+        action = `
+          <button type="button" class="download-resume-btn" onclick="event.stopPropagation(); App.resumeDownload('${escapeHtml(entry.jobId)}')">▶ Продолжить</button>
+          <button type="button" class="download-cancel-btn" onclick="event.stopPropagation(); App.cancelDownload('${escapeHtml(entry.jobId)}')">✕</button>
+        `;
+      } else if (active) {
+        action = `<button type="button" class="download-cancel-btn" onclick="event.stopPropagation(); App.cancelDownload('${escapeHtml(entry.jobId)}')">Отменить</button>`;
+      } else {
+        action = `<button type="button" class="download-dismiss-btn" onclick="event.stopPropagation(); App.dismissDownload('${escapeHtml(entry.jobId)}')">Убрать</button>`;
+      }
       return `
         <div class="download-item ${statusClass}">
           <div class="download-item-head">
@@ -2410,6 +2424,36 @@ const App = {
         </div>
       `;
     }).join("");
+  },
+
+  async pauseDownload(jobId) {
+    try {
+      await this.apiPost(`/api/jobs/${encodeURIComponent(jobId)}/pause`);
+      const entry = this.state.downloads[jobId];
+      if (entry) {
+        entry.status = "paused";
+        entry.message = "Загрузка приостановлена";
+      }
+      this.renderDownloads();
+      this.toast("info", "Загрузка приостановлена");
+    } catch (e) {
+      this.toast("error", "Не удалось приостановить загрузку: " + (e.message || ""));
+    }
+  },
+
+  async resumeDownload(jobId) {
+    try {
+      await this.apiPost(`/api/jobs/${encodeURIComponent(jobId)}/resume`);
+      const entry = this.state.downloads[jobId];
+      if (entry) {
+        entry.status = "downloading";
+        entry.message = "Возобновление загрузки...";
+      }
+      this.renderDownloads();
+      this.toast("info", "Загрузка возобновлена");
+    } catch (e) {
+      this.toast("error", "Не удалось возобновить загрузку: " + (e.message || ""));
+    }
   },
 
   dismissDownload(jobId) {
