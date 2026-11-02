@@ -612,15 +612,46 @@ def unload_vision_model(ollama_url: str, model_id: Optional[str] = None, timeout
         return False
 
 
+def _notify_progress(
+    cb: Optional[Callable[..., None]],
+    pct: float,
+    detail: str,
+    downloaded_bytes: Optional[int] = None,
+    total_bytes: Optional[int] = None,
+    speed_bps: Optional[float] = None,
+    status: str = "downloading",
+    error: Optional[str] = None,
+) -> None:
+    if not cb:
+        return
+    try:
+        cb(
+            pct,
+            detail,
+            downloaded_bytes=downloaded_bytes,
+            total_bytes=total_bytes,
+            speed_bps=speed_bps,
+            status=status,
+            error=error,
+        )
+    except TypeError:
+        try:
+            cb(pct, detail)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _download_hf_vision_model(
     entry: Dict[str, Any],
     job_id: str,
     models_dir: Optional[Path] = None,
     hf_token: Optional[str] = None,
-    progress_callback: Optional[Callable[[float, str], None]] = None,
+    progress_callback: Optional[Callable[..., None]] = None,
 ) -> None:
     """Download a HuggingFace-hosted vision/PUP model (Nunchaku SVDQ or Unsloth GGUF) into ``models/cache/<local_dir>``."""
-    from huggingface_hub import hf_hub_download
+    from backend.sources import get_source
 
     model_id = entry["id"]
     repo_id = entry["repo_id"]
@@ -628,29 +659,57 @@ def _download_hf_vision_model(
     target_dir = base_dir / entry["local_dir"]
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    token = hf_token or os.environ.get("HF_TOKEN") or None
+    src = get_source("huggingface", token=token)
+
     files_to_fetch = list(entry.get("support_files") or []) + [entry["primary_file"]]
     total_files = len(files_to_fetch)
 
     for idx, fname in enumerate(files_to_fetch, 1):
-        pct = round((idx - 1) / max(1, total_files) * 100.0, 1)
+        base_pct = (idx - 1) / max(1, total_files) * 100.0
+        span_pct = 100.0 / max(1, total_files)
         detail = f"Downloading {fname} ({idx}/{total_files})..."
         set_download_state(
             model_id,
             status="downloading",
             job_id=job_id,
-            progress=pct,
+            progress=round(base_pct, 1),
             detail=detail,
         )
-        if progress_callback:
-            try:
-                progress_callback(pct, detail)
-            except Exception:
-                pass
-        hf_hub_download(
+        _notify_progress(progress_callback, round(base_pct, 1), detail, status="downloading")
+
+        def _file_progress(dl_bytes: int, tot_bytes: int, speed_bps: float, _fname: str = fname, _idx: int = idx, _base: float = base_pct, _span: float = span_pct) -> None:
+            frac = (dl_bytes / float(tot_bytes)) if tot_bytes > 0 else 0.0
+            cur_pct = min(99.9, round(_base + frac * _span, 1))
+            dl_mb = dl_bytes / (1024 * 1024)
+            tot_mb = tot_bytes / (1024 * 1024) if tot_bytes > 0 else 0.0
+            spd_mb = (speed_bps or 0.0) / (1024 * 1024)
+            spd_str = f" · {spd_mb:.1f} MB/s" if spd_mb >= 0.1 else ""
+            msg = f"{_fname} ({_idx}/{total_files}): {dl_mb:.1f} / {tot_mb:.1f} MB{spd_str}" if tot_bytes > 0 else f"Downloading {_fname} ({_idx}/{total_files})..."
+            set_download_state(
+                model_id,
+                status="downloading",
+                job_id=job_id,
+                progress=cur_pct,
+                detail=msg,
+            )
+            _notify_progress(
+                progress_callback,
+                cur_pct,
+                msg,
+                downloaded_bytes=dl_bytes,
+                total_bytes=tot_bytes,
+                speed_bps=speed_bps,
+                status="downloading",
+            )
+
+        src.download_file(
             repo_id=repo_id,
-            filename=fname,
-            local_dir=str(target_dir),
-            token=hf_token or os.environ.get("HF_TOKEN") or None,
+            file_path=fname,
+            local_dir=target_dir,
+            revision="main",
+            progress_callback=_file_progress,
+            job_id=job_id,
         )
 
     set_download_state(
@@ -660,19 +719,16 @@ def _download_hf_vision_model(
         progress=100.0,
         detail="Installed",
     )
-    if progress_callback:
-        try:
-            progress_callback(100.0, "Installed")
-        except Exception:
-            pass
+    _notify_progress(progress_callback, 100.0, "Installed ✓", status="complete")
 
 
 def start_vision_model_download(
     ollama_url: str,
     model_id: str,
-    progress_callback: Optional[Callable[[float, str], None]] = None,
+    progress_callback: Optional[Callable[..., None]] = None,
     models_dir: Optional[Path] = None,
     hf_token: Optional[str] = None,
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Start (or attach to) an asynchronous download job for a VLM or FLUX.3 PUP model."""
     existing = get_download_state(model_id)
@@ -683,6 +739,7 @@ def start_vision_model_download(
     state = set_download_state(
         model_id,
         status="downloading",
+        job_id=job_id,
         progress=0.0,
         detail="Starting download...",
     )
@@ -690,20 +747,8 @@ def start_vision_model_download(
 
     def _worker() -> None:
         try:
-            # Nunchaku PUP always downloads directly from HuggingFace
-            if entry and entry.get("provider") == "nunchaku":
-                _download_hf_vision_model(
-                    entry,
-                    job_id=job_id,
-                    models_dir=models_dir,
-                    hf_token=hf_token,
-                    progress_callback=progress_callback,
-                )
-                return
-
-            # GGUF PUP: if Ollama is running, pull via Ollama AND/OR download GGUF from HF if Ollama is offline
-            st = check_ollama_status(ollama_url)
-            if entry and entry.get("provider") == "gguf" and not st["ollama_available"]:
+            # HuggingFace-hosted PUP weights (Nunchaku SVDQ & Unsloth GGUF) download directly via Hub DownloadManager
+            if entry and entry.get("provider") in ("nunchaku", "gguf") and entry.get("repo_id"):
                 _download_hf_vision_model(
                     entry,
                     job_id=job_id,
@@ -744,11 +789,14 @@ def start_vision_model_download(
                         progress=pct,
                         detail=status_text,
                     )
-                    if progress_callback:
-                        try:
-                            progress_callback(pct, status_text)
-                        except Exception:
-                            pass
+                    _notify_progress(
+                        progress_callback,
+                        pct,
+                        status_text,
+                        downloaded_bytes=int(completed) if completed > 0 else None,
+                        total_bytes=int(total) if total > 0 else None,
+                        status="downloading",
+                    )
 
             set_download_state(
                 model_id,
@@ -757,14 +805,23 @@ def start_vision_model_download(
                 progress=100.0,
                 detail="Installed",
             )
+            _notify_progress(progress_callback, 100.0, "Installed ✓", status="complete")
         except Exception as exc:
             logger.warning("[vision] Download failed for %s: %s", model_id, exc)
+            is_cancelled = "cancelled by user" in str(exc).lower()
             set_download_state(
                 model_id,
-                status="error",
+                status="not_installed" if is_cancelled else "error",
                 job_id=job_id,
                 progress=0.0,
-                detail="Download failed",
+                detail="Cancelled" if is_cancelled else "Download failed",
+                error=None if is_cancelled else str(exc),
+            )
+            _notify_progress(
+                progress_callback,
+                0.0,
+                "Cancelled" if is_cancelled else f"Download failed: {exc}",
+                status="cancelled" if is_cancelled else "error",
                 error=str(exc),
             )
 
@@ -789,7 +846,7 @@ def delete_vision_model(
             primary_path.unlink(missing_ok=True)
             removed_local = True
 
-    if entry and entry.get("provider") == "nunchaku":
+    if entry and entry.get("provider") in ("nunchaku", "gguf"):
         clear_download_state(model_id)
         return True
 

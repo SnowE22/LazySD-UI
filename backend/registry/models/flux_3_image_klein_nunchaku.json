@@ -97,5 +97,8 @@
       }
     }
   ],
+  "prompt_upsamplers": [
+    "flux3-pup-nunchaku"
+  ],
   "tags": ["svdq", "nunchaku", "tonera", "klein", "flux"]
 }

@@ -2248,6 +2248,23 @@ def create_app() -> FastAPI:
 
 
             qf_disabled = quantfunc_model_disabled(m, qf_enabled)
+            from backend.vision_models import get_catalog_entry as _get_vision_entry, is_local_vision_model_installed as _is_vision_installed
+            pup_entries = []
+            for _pup_id in getattr(m, "prompt_upsamplers", []):
+                _pe = _get_vision_entry(_pup_id)
+                if _pe:
+                    pup_entries.append({
+                        "id": _pe["id"],
+                        "name": _pe["name"],
+                        "provider": _pe.get("provider", "ollama"),
+                        "repo_id": _pe.get("repo_id", ""),
+                        "primary_file": _pe.get("primary_file", ""),
+                        "size_gb": _pe.get("size_gb", 0.0),
+                        "vram_min_gb": _pe.get("vram_min_gb", 8),
+                        "recommended": bool(_pe.get("recommended", False)),
+                        "description": _pe.get("description", ""),
+                        "installed": _is_vision_installed(_pe, settings.models_dir),
+                    })
 
 
 
@@ -2270,6 +2287,7 @@ def create_app() -> FastAPI:
 
                 "pipeline": m.pipeline,
                 "supports_mask": model_supports_mask(m),
+                "prompt_upsamplers": pup_entries,
 
 
 
@@ -3404,6 +3422,23 @@ def create_app() -> FastAPI:
 
 
             qf_disabled = quantfunc_model_disabled(m, qf_enabled)
+            from backend.vision_models import get_catalog_entry as _get_vision_entry, is_local_vision_model_installed as _is_vision_installed
+            pup_entries = []
+            for _pup_id in getattr(m, "prompt_upsamplers", []):
+                _pe = _get_vision_entry(_pup_id)
+                if _pe:
+                    pup_entries.append({
+                        "id": _pe["id"],
+                        "name": _pe["name"],
+                        "provider": _pe.get("provider", "ollama"),
+                        "repo_id": _pe.get("repo_id", ""),
+                        "primary_file": _pe.get("primary_file", ""),
+                        "size_gb": _pe.get("size_gb", 0.0),
+                        "vram_min_gb": _pe.get("vram_min_gb", 8),
+                        "recommended": bool(_pe.get("recommended", False)),
+                        "description": _pe.get("description", ""),
+                        "installed": _is_vision_installed(_pe, settings.models_dir),
+                    })
 
 
 
@@ -3426,6 +3461,7 @@ def create_app() -> FastAPI:
 
                 "pipeline": m.pipeline,
                 "supports_mask": model_supports_mask(m),
+                "prompt_upsamplers": pup_entries,
 
 
 
@@ -14186,19 +14222,62 @@ def create_app() -> FastAPI:
             if not st["ollama_available"]:
                 raise HTTPException(503, f"Ollama is not reachable at {ollama_url}. Start Ollama first.")
 
-        dl_state = start_vision_model_download(
-            ollama_url,
-            entry["id"],
-            models_dir=settings.models_dir,
-            hf_token=settings.huggingface_token,
-        )
-        job_id = dl_state["job_id"]
+        job_id = f"vision-{uuid.uuid4().hex[:10]}"
         STATE.register_job(job_id, kind="download", shared=True)
         STATE.update_job(job_id, ProgressEvent(
             status=JobStatus.DOWNLOADING,
             progress=0.0,
             message=f"Downloading {entry['name']}...",
         ))
+
+        def _on_vision_progress(
+            pct: float,
+            detail: str,
+            downloaded_bytes: Optional[int] = None,
+            total_bytes: Optional[int] = None,
+            speed_bps: Optional[float] = None,
+            status: str = "downloading",
+            error: Optional[str] = None,
+        ) -> None:
+            if status == "complete":
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.COMPLETE,
+                    progress=1.0,
+                    message=f"{entry['name']} installed ✓",
+                    downloaded_bytes=downloaded_bytes,
+                    total_bytes=total_bytes,
+                ))
+            elif status == "cancelled":
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.CANCELLED,
+                    progress=0.0,
+                    message="Download cancelled",
+                ))
+            elif status == "error":
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.ERROR,
+                    progress=0.0,
+                    message=detail or "Download failed",
+                    error=error or detail,
+                ))
+            else:
+                STATE.update_job(job_id, ProgressEvent(
+                    status=JobStatus.DOWNLOADING,
+                    progress=max(0.0, min(1.0, float(pct or 0.0) / 100.0)),
+                    message=detail or f"Downloading {entry['name']}...",
+                    downloaded_bytes=downloaded_bytes,
+                    total_bytes=total_bytes,
+                    speed_bps=speed_bps,
+                ))
+
+        dl_state = start_vision_model_download(
+            ollama_url,
+            entry["id"],
+            progress_callback=_on_vision_progress,
+            models_dir=settings.models_dir,
+            hf_token=settings.huggingface_token,
+            job_id=job_id,
+        )
         return dl_state
 
     @app.delete("/api/vision/models/{model_id:path}")

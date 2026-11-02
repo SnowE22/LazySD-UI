@@ -1444,8 +1444,9 @@
                 <select id="inpaint-vision-model-select" title="Vision Model" onchange="App.onInpaintVisionModelChange()">
                   <option value="heuristic">Эвристика (без VLM)</option>
                 </select>
-                <button type="button" class="mask-mini-btn" id="inpaint-vision-download-btn" onclick="App.downloadInpaintVisionModel()" style="display: none;" title="Скачать vision-модель через Ollama">⬇</button>
-                <button type="button" class="mask-mini-btn" id="inpaint-vision-delete-btn" onclick="App.deleteInpaintVisionModel()" style="display: none;" title="Удалить vision-модель">🗑</button>
+                <button type="button" class="mask-mini-btn" id="inpaint-vision-download-btn" onclick="App.downloadInpaintVisionModel()" style="display: none;" title="Скачать выбранные веса через менеджер загрузок Хаба">⬇</button>
+                <button type="button" class="mask-mini-btn" id="inpaint-vision-delete-btn" onclick="App.deleteInpaintVisionModel()" style="display: none;" title="Удалить веса модели с диска">🗑</button>
+                <button type="button" class="mask-mini-btn" id="inpaint-vision-hub-btn" onclick="App.openVisionModelsInHub()" title="Открыть веса Промпт / VLM в Хабе моделей">📦</button>
                 <button type="button" class="mask-mini-btn" id="inpaint-vision-refresh-btn" onclick="App.loadInpaintVisionModels()" title="Обновить список vision-моделей">↻</button>
               </div>
               <button type="button" class="inpaint-generate-prompt-btn" id="inpaint-generate-prompt-btn" onclick="App.generateInpaintPrompt()" disabled>
@@ -1726,6 +1727,8 @@
               <button type="button" class="filter-chip" data-tab-filter="svdq" onclick="App.setModelsTabFilter('svdq', this)">⚡ SVDQ</button>
 
               <button type="button" class="filter-chip" data-tab-filter="encoders" onclick="App.setModelsTabFilter('encoders', this)" data-i18n="models.filter.encoders">🔤 Энкодеры</button>
+
+              <button type="button" class="filter-chip" data-tab-filter="vision" onclick="App.setModelsTabFilter('vision', this)">✨ Промпт / VLM</button>
 
               <button type="button" class="filter-chip" data-tab-filter="custom" onclick="App.setModelsTabFilter('custom', this)" data-i18n="models.filter.custom">🎨 Свои</button>
 

@@ -1059,6 +1059,10 @@ const App = {
       await this.renderEncodersTab(listEl);
       return;
     }
+    if (filter === "vision") {
+      await this.renderVisionModelsTab(listEl);
+      return;
+    }
 
     const query = (this.state.modelsTabSearch || "").trim().toLowerCase();
     const filtered = this.sortModelsList(this.state.models).filter(model => {
@@ -1275,6 +1279,36 @@ const App = {
            </details>`
         : "";
 
+      const pupList = Array.isArray(model.prompt_upsamplers) ? model.prompt_upsamplers : [];
+      const pupRows = pupList.map((pup) => {
+        const tech = [
+          pup.repo_id,
+          pup.primary_file,
+          pup.provider ? String(pup.provider).toUpperCase() : "",
+          pup.size_gb ? `${pup.size_gb} GB` : "",
+        ].filter(Boolean).join(" · ");
+        const pupAction = pup.installed
+          ? `<div class="variant-actions">
+               <span class="variant-state installed" title="${escapeHtml(t("models.component_on_disk"))}">${ICON_CHECK}<span>${escapeHtml(t("models.component_on_disk"))}</span></span>
+               <button type="button" class="btn-delete-files" data-vision-id="${escapeHtml(pup.id)}" data-vision-name="${escapeHtml(pup.name || pup.id)}" onclick="App.deleteVisionModelFromHub(this.dataset.visionId, this)" title="${escapeHtml(t("models.component_delete"))} ${escapeHtml(pup.name || pup.id)}">${ICON_TRASH}<span>${escapeHtml(t("models.component_delete"))}</span></button>
+             </div>`
+          : `<button type="button" class="btn-download" data-vision-id="${escapeHtml(pup.id)}" onclick="App.downloadVisionModelFromHub(this.dataset.visionId, this)" title="${escapeHtml(t("models.component_download"))} ${escapeHtml(pup.name || pup.id)}">${ICON_DOWNLOAD}<span>${escapeHtml(t("models.component_download"))}${pup.size_gb ? ` (${pup.size_gb} GB)` : ""}</span></button>`;
+        return `
+          <div class="component-item">
+            <div class="component-info">
+              <span class="component-name">✨ ${escapeHtml(pup.name || pup.id)}</span>
+              <span class="component-sub" title="${escapeHtml(tech)}">${escapeHtml(tech)}</span>
+            </div>
+            <div class="component-actions">${pupAction}</div>
+          </div>`;
+      }).join("");
+      const pupSection = pupList.length
+        ? `<details class="model-card-section">
+             <summary class="model-card-section-title">✨ Prompt Upsampler / VLM (${pupList.length})</summary>
+             <div class="model-variants-list">${pupRows}</div>
+           </details>`
+        : "";
+
       const noticeHtml = isDisabled
         ? `<div style="margin-top: 10px; padding: 8px 12px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 6px; font-size: 12px; color: #f87171;">⚠️ ${escapeHtml(localizedDisabledReason(model.disabled_reason, "models.disabled_upstream_hint"))}</div>`
         : "";
@@ -1305,6 +1339,7 @@ const App = {
           ${teSection}
           ${vaeSection}
           ${auxSection}
+          ${pupSection}
           <div style="margin-top: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px;">
             ${selectBtnHtml}
             ${editCardBtn}
@@ -1389,9 +1424,172 @@ const App = {
       }
 
       listEl.appendChild(grid);
+      try {
+        const visionData = await this.apiGet("/api/vision/models");
+        this.state.visionModels = Array.isArray(visionData?.models) ? visionData.models : [];
+        const visionFiltered = this.state.visionModels.filter(vm => {
+          if (!query) return true;
+          return [vm.name, vm.id, vm.repo_id, vm.primary_file, vm.provider, vm.description]
+            .filter(Boolean)
+            .some(v => String(v).toLowerCase().includes(query));
+        });
+        if (visionFiltered.length) {
+          const sectionHeader = document.createElement("div");
+          sectionHeader.style.cssText = "margin: 24px 0 12px; font-size: 14px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 8px;";
+          sectionHeader.innerHTML = `<span>✨ Prompt Upsampler / VLM (Помощник промпта и FLUX.3 PUP)</span><span style="font-size: 12px; color: var(--text-muted); font-weight: 400;">(${visionFiltered.length})</span>`;
+          listEl.appendChild(sectionHeader);
+          listEl.appendChild(this.buildVisionModelsGrid(visionFiltered));
+        }
+      } catch (vErr) {
+        console.warn("[hub] Failed to append vision models to encoders tab:", vErr);
+      }
     } catch (err) {
       listEl.innerHTML = `<div class="placeholder-text" style="color: #f87171;">${escapeHtml(t("status.error"))}: ${escapeHtml(err.message)}</div>`;
     }
+  },
+
+  buildVisionModelsGrid(models) {
+    const grid = document.createElement("div");
+    grid.className = "encoders-grid";
+    for (const vm of models) {
+      const card = document.createElement("div");
+      card.className = "encoder-card";
+      const isDownloading = vm.status === "downloading";
+      const statusBadge = vm.installed
+        ? `<span class="badge-installed">${escapeHtml(t("models.encoder_installed") || "Установлен")}</span>`
+        : isDownloading
+          ? `<span class="badge-installed" style="background: rgba(56, 189, 248, 0.16); color: #38bdf8;">⏳ ${Math.round(vm.progress || 0)}%</span>`
+          : `<span class="badge-missing">${escapeHtml(t("models.encoder_missing") || "Не скачан")}</span>`;
+      const sizeText = Number.isFinite(Number(vm.size_gb)) && Number(vm.size_gb) > 0
+        ? `${Number(vm.size_gb).toFixed(2).replace(/\.00$/, ".0")} GB`
+        : "";
+      const providerBadge = vm.provider === "nunchaku"
+        ? "⚡ Nunchaku SVDQ INT4"
+        : vm.provider === "gguf"
+          ? "📦 GGUF (SD.CPP / Ollama)"
+          : "🦙 Ollama VLM";
+      const caps = Array.isArray(vm.capabilities) ? vm.capabilities : [];
+      const usedTags = [];
+      if (caps.includes("flux3_pup")) usedTags.push("FLUX.3 Prompt Upsampler (✨ PUP)");
+      if (caps.includes("vision")) usedTags.push("Inpaint Помощник промпта (VLM)");
+      const usedByHtml = usedTags.length
+        ? `<div class="encoder-used-by">${usedTags.map(tag => `<span class="encoder-used-tag">${escapeHtml(tag)}</span>`).join("")}</div>`
+        : "";
+      const actionBtn = vm.installed
+        ? `<div class="variant-actions">
+             <span class="card-action-btn active" style="width: auto;">${ICON_CHECK} ${escapeHtml(t("models.encoder_cached") || "На диске")}</span>
+             <button type="button" class="btn-delete-files encoder-delete-btn" data-vision-id="${escapeHtml(vm.id)}" onclick="App.deleteVisionModelFromHub(this.dataset.visionId, this)" title="Удалить веса модели">${ICON_TRASH}<span>${escapeHtml(t("models.component_delete") || "Удалить")}</span></button>
+           </div>`
+        : `<button type="button" class="btn-download encoder-download-btn" data-vision-id="${escapeHtml(vm.id)}" ${isDownloading ? "disabled" : ""} onclick="App.downloadVisionModelFromHub(this.dataset.visionId, this)">${ICON_DOWNLOAD}<span>${isDownloading ? `Скачивание (${Math.round(vm.progress || 0)}%)` : `${escapeHtml(t("models.encoder_download") || "Скачать")}${sizeText ? ` (${sizeText})` : ""}`}</span></button>`;
+
+      card.innerHTML = `
+        <div>
+          <div class="encoder-card-header">
+            <span class="encoder-title">✨ ${escapeHtml(vm.name || vm.id)}</span>
+            ${statusBadge}
+          </div>
+          ${vm.description ? `<p style="font-size: 12px; color: var(--text-secondary); margin: 6px 0 8px; line-height: 1.4;">${escapeHtml(vm.description)}</p>` : ""}
+          <div class="encoder-meta">
+            ${vm.primary_file ? `<span>📁 ${escapeHtml(t("models.encoder_file") || "Файл")}: <code>${escapeHtml(vm.primary_file)}</code></span>` : `<span>🏷 ID: <code>${escapeHtml(vm.id)}</code></span>`}
+            ${vm.repo_id ? `<span>🌐 ${escapeHtml(t("models.encoder_repo") || "Репозиторий")}: <code>${escapeHtml(vm.repo_id)}</code></span>` : ""}
+            <span>⚙ Провайдер: <code>${escapeHtml(providerBadge)}</code>${sizeText ? ` · ${sizeText}` : ""}${vm.vram_min_gb ? ` · VRAM ≥ ${vm.vram_min_gb} GB` : ""}</span>
+          </div>
+          ${usedByHtml}
+        </div>
+        <div style="margin-top: 12px;">
+          ${actionBtn}
+        </div>
+      `;
+      grid.appendChild(card);
+    }
+    return grid;
+  },
+
+  async renderVisionModelsTab(listEl) {
+    if (!listEl) return;
+    listEl.innerHTML = `<div class="placeholder-text">${escapeHtml(t("common.loading") || "Загрузка...")}</div>`;
+    try {
+      const data = await this.apiGet("/api/vision/models");
+      this.state.visionModels = Array.isArray(data?.models) ? data.models : [];
+      const query = (this.state.modelsTabSearch || "").trim().toLowerCase();
+      const filtered = this.state.visionModels.filter(vm => {
+        if (!query) return true;
+        return [vm.name, vm.id, vm.repo_id, vm.primary_file, vm.provider, vm.description]
+          .filter(Boolean)
+          .some(v => String(v).toLowerCase().includes(query));
+      });
+      if (!filtered.length) {
+        listEl.innerHTML = `<div class="placeholder-text" style="padding: 40px 0;">Модели Промпт / VLM не найдены</div>`;
+        return;
+      }
+      listEl.innerHTML = "";
+      listEl.appendChild(this.buildVisionModelsGrid(filtered));
+    } catch (err) {
+      listEl.innerHTML = `<div class="placeholder-text" style="color: #f87171;">${escapeHtml(t("status.error"))}: ${escapeHtml(err.message)}</div>`;
+    }
+  },
+
+  async downloadVisionModelFromHub(modelId, btnEl) {
+    if (!modelId) return;
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.classList.add("is-loading");
+    }
+    try {
+      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {});
+      const vm = (this.state.visionModels || []).find(m => m.id === modelId);
+      const label = vm?.name || modelId;
+      this.toast("info", `Скачивание «${label}» добавлено в Загрузки...`);
+      if (res?.job_id && this.startDownloadPolling) {
+        this.startDownloadPolling(res.job_id, {
+          label: `VLM/PUP: ${label}`,
+          kind: "vision",
+          modelId,
+          repoId: vm?.repo_id || modelId,
+        });
+      }
+    } catch (err) {
+      this.toast("error", "Ошибка скачивания: " + (err.message || err));
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.classList.remove("is-loading");
+      }
+    }
+  },
+
+  async deleteVisionModelFromHub(modelId, btnEl) {
+    if (!modelId) return;
+    const vm = (this.state.visionModels || []).find(m => m.id === modelId);
+    const label = vm?.name || modelId;
+    if (!confirm(`Удалить веса модели «${label}» с диска?`)) return;
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.classList.add("is-loading");
+    }
+    try {
+      const res = await fetch(`/api/vision/models/${encodeURIComponent(modelId)}?confirm=true`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      this.toast("success", `Веса «${label}» удалены`);
+      this.state.visionModels = null;
+      await this.refreshConfig();
+      await this.renderModelsTab();
+      if (this.loadInpaintVisionModels) await this.loadInpaintVisionModels();
+    } catch (err) {
+      this.toast("error", "Ошибка удаления: " + (err.message || err));
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.classList.remove("is-loading");
+      }
+    }
+  },
+
+  openVisionModelsInHub() {
+    this.switchTab("models");
+    const chip = document.querySelector('#models-tab-filters [data-tab-filter="vision"]');
+    this.setModelsTabFilter("vision", chip);
   },
 
   async downloadSharedEncoder(repoId, filePath, teId, btnEl) {
@@ -2510,9 +2708,13 @@ const App = {
           clearInterval(interval);
           if (overlay) overlay.style.display = "none";
           this.toast("success", "Model files downloaded ✓");
-          // Refresh model/encoder metadata so the Models Hub flips to "Installed".
+          // Refresh model/encoder/vision metadata so the Models Hub flips to "Installed".
           this.state.encoders = null;
+          this.state.visionModels = null;
           await this.refreshConfig();
+          if (this.loadInpaintVisionModels) {
+            try { await this.loadInpaintVisionModels(); } catch (_) {}
+          }
         } else if (status.status === "error") {
           clearInterval(interval);
           if (overlay) overlay.style.display = "none";
@@ -13977,8 +14179,17 @@ Object.assign(App, {
         badge.style.display = "inline-block";
         badge.textContent = "⏳ 0%";
       }
-      await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {});
-      this.toast("info", `Загрузка ${modelId} запущена...`);
+      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {});
+      const entry = (state.visionModels || []).find((m) => m.id === modelId);
+      if (res?.job_id && this.startDownloadPolling) {
+        this.startDownloadPolling(res.job_id, {
+          label: `VLM/PUP: ${entry?.name || modelId}`,
+          kind: "vision",
+          modelId,
+          repoId: entry?.repo_id || modelId,
+        });
+      }
+      this.toast("info", `Загрузка ${entry?.name || modelId} запущена (см. Хаб → Загрузки)...`);
       for (let i = 0; i < 300; i += 1) {
         await new Promise((r) => setTimeout(r, 1500));
         const data = await this.apiGet("/api/vision/models");

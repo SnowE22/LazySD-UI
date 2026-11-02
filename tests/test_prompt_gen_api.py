@@ -176,9 +176,25 @@ def test_prompt_gen_api_validation_and_error_codes():
         sample_path.unlink(missing_ok=True)
 
 
+def test_hub_prompt_upsamplers_in_config_and_download_job():
+    application = app_module.create_app()
+    client = TestClient(application)
+
+    cfg = client.get("/api/config").json()
+    models_by_id = {m["id"]: m for m in cfg["models"]}
+    assert "flux_3_image_klein_gguf" in models_by_id
+    assert "flux_3_image_klein_nunchaku" in models_by_id
+
+    gguf_pups = models_by_id["flux_3_image_klein_gguf"].get("prompt_upsamplers") or []
+    nunchaku_pups = models_by_id["flux_3_image_klein_nunchaku"].get("prompt_upsamplers") or []
+    assert any(p["id"] == "hf.co/unsloth/flux-3-image-klein-pup-GGUF:UD-Q4_K_XL" for p in gguf_pups)
+    assert any(p["id"] == "flux3-pup-nunchaku" for p in nunchaku_pups)
+
+
 if __name__ == "__main__":
     test_parse_vlm_response_json_and_fences()
     test_prompt_gen_api_heuristic_fallback_and_cache()
     test_prompt_gen_api_with_mock_vlm()
     test_prompt_gen_api_validation_and_error_codes()
+    test_hub_prompt_upsamplers_in_config_and_download_job()
     print("[SUCCESS] All test_prompt_gen_api tests passed!")
