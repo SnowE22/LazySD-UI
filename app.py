@@ -14244,7 +14244,7 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/api/vision/models/{model_id:path}/download")
-    async def api_vision_model_download(model_id: str, request: Request = None):
+    async def api_vision_model_download(model_id: str, body: Optional[dict] = None, request: Request = None):
         if request:
             from backend.accounts import resolve_account_from_scope
             caller = request.scope.get("state", {}).get("account") or resolve_account_from_scope(request.scope)
@@ -14261,12 +14261,17 @@ def create_app() -> FastAPI:
         if existing and existing.get("status") == "downloading":
             return existing
 
+        req_provider = str((body or {}).get("provider") or "").strip().lower() or None
+        eff_provider = req_provider or entry.get("provider", "ollama")
+        if entry.get("provider") == "nunchaku":
+            eff_provider = "nunchaku"
+
         settings = get_settings()
         ollama_url = getattr(settings, "vision_ollama_url", "http://127.0.0.1:11434")
-        if entry.get("provider") == "ollama":
+        if eff_provider == "ollama":
             st = await asyncio.to_thread(check_ollama_status, ollama_url)
             if not st["ollama_available"]:
-                raise HTTPException(503, f"Ollama is not reachable at {ollama_url}. Start Ollama first.")
+                raise HTTPException(503, f"Ollama is not reachable at {ollama_url}. Start Ollama first or switch provider to GGUF (HF Cache).")
 
         job_id = f"vision-{uuid.uuid4().hex[:10]}"
         STATE.register_job(job_id, kind="download", shared=True)
@@ -14323,6 +14328,7 @@ def create_app() -> FastAPI:
             models_dir=settings.models_dir,
             hf_token=settings.huggingface_token,
             job_id=job_id,
+            preferred_provider=eff_provider,
         )
         return dl_state
 
@@ -14378,6 +14384,7 @@ def create_app() -> FastAPI:
                 crop_box=body.get("crop_box"),
                 crop_padding=int(body.get("crop_padding") if body.get("crop_padding") is not None else 64),
                 vision_model=body.get("vision_model"),
+                vision_provider=body.get("vision_provider"),
                 use_vlm=bool(body.get("use_vlm", True)),
                 settings=settings,
                 project_root=project_root,

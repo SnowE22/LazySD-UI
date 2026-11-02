@@ -1453,6 +1453,31 @@ const App = {
     }
   },
 
+  getVisionCardProvider(vm) {
+    if (!vm) return "ollama";
+    if (vm.provider === "nunchaku") return "nunchaku";
+    let map = {};
+    try { map = JSON.parse(localStorage.getItem("lazysd_vision_card_providers") || "{}") || {}; } catch (_) {}
+    const saved = map[vm.id];
+    const supported = Array.isArray(vm.supported_providers) && vm.supported_providers.length
+      ? vm.supported_providers
+      : (vm.provider === "nunchaku" ? ["nunchaku"] : ["ollama", "gguf"]);
+    if (saved && supported.includes(saved)) return saved;
+    if (vm.installed_ollama && supported.includes("ollama")) return "ollama";
+    if (vm.installed_local && supported.includes("gguf")) return "gguf";
+    return vm.provider || supported[0] || "ollama";
+  },
+
+  onVisionCardProviderChange(modelId, provider) {
+    if (!modelId || !provider) return;
+    try {
+      const map = JSON.parse(localStorage.getItem("lazysd_vision_card_providers") || "{}") || {};
+      map[modelId] = provider;
+      localStorage.setItem("lazysd_vision_card_providers", JSON.stringify(map));
+    } catch (_) {}
+    this.renderModelsTab();
+  },
+
   buildVisionModelsGrid(models) {
     const grid = document.createElement("div");
     grid.className = "encoders-grid";
@@ -1460,19 +1485,38 @@ const App = {
       const card = document.createElement("div");
       card.className = "encoder-card";
       const isDownloading = vm.status === "downloading";
-      const statusBadge = vm.installed
-        ? `<span class="badge-installed">${escapeHtml(t("models.encoder_installed") || "Установлен")}</span>`
-        : isDownloading
-          ? `<span class="badge-installed" style="background: rgba(56, 189, 248, 0.16); color: #38bdf8;">⏳ ${Math.round(vm.progress || 0)}%</span>`
-          : `<span class="badge-missing">${escapeHtml(t("models.encoder_missing") || "Не скачан")}</span>`;
+      const selectedProv = this.getVisionCardProvider(vm);
+      const isInstalledForProv = selectedProv === "nunchaku"
+        ? Boolean(vm.installed_local || vm.installed)
+        : selectedProv === "gguf"
+          ? Boolean(vm.installed_local)
+          : Boolean(vm.installed_ollama);
+      const anyInstalled = Boolean(vm.installed);
+
+      const statusBadge = isInstalledForProv
+        ? `<span class="badge-installed">✓ Установлен (${selectedProv === "ollama" ? "Ollama" : selectedProv === "gguf" ? "GGUF кэш" : "SVDQ"})</span>`
+        : anyInstalled
+          ? `<span class="badge-installed" style="background: rgba(16, 185, 129, 0.14); color: #34d399;">✓ Доступен (${vm.installed_ollama ? "Ollama" : "GGUF кэш"})</span>`
+          : isDownloading
+            ? `<span class="badge-installed" style="background: rgba(56, 189, 248, 0.16); color: #38bdf8;">⏳ ${Math.round(vm.progress || 0)}%</span>`
+            : `<span class="badge-missing">${escapeHtml(t("models.encoder_missing") || "Не скачан")}</span>`;
+
       const sizeText = Number.isFinite(Number(vm.size_gb)) && Number(vm.size_gb) > 0
         ? `${Number(vm.size_gb).toFixed(2).replace(/\.00$/, ".0")} GB`
         : "";
-      const providerBadge = vm.provider === "nunchaku"
-        ? "⚡ Nunchaku SVDQ INT4"
-        : vm.provider === "gguf"
-          ? "📦 GGUF (SD.CPP / Ollama)"
-          : "🦙 Ollama VLM";
+
+      const supported = Array.isArray(vm.supported_providers) && vm.supported_providers.length
+        ? vm.supported_providers
+        : (vm.provider === "nunchaku" ? ["nunchaku"] : ["ollama", "gguf"]);
+      const providerLabels = {
+        ollama: "🦙 Ollama (VLM Сервер)",
+        gguf: "📦 GGUF (HF Кэш / SD.CPP)",
+        nunchaku: "⚡ Nunchaku SVDQ INT4",
+      };
+      const providerSelectHtml = `<select class="vision-card-provider-select" data-vision-id="${escapeHtml(vm.id)}" onchange="App.onVisionCardProviderChange(this.dataset.visionId, this.value)" style="height: 24px; font-size: 11.5px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border); border-radius: 5px; padding: 0 6px; cursor: pointer;">
+        ${supported.map(p => `<option value="${escapeHtml(p)}" ${p === selectedProv ? "selected" : ""}>${escapeHtml(providerLabels[p] || p)}</option>`).join("")}
+      </select>`;
+
       const caps = Array.isArray(vm.capabilities) ? vm.capabilities : [];
       const usedTags = [];
       if (caps.includes("flux3_pup")) usedTags.push("FLUX.3 Prompt Upsampler (✨ PUP)");
@@ -1480,12 +1524,24 @@ const App = {
       const usedByHtml = usedTags.length
         ? `<div class="encoder-used-by">${usedTags.map(tag => `<span class="encoder-used-tag">${escapeHtml(tag)}</span>`).join("")}</div>`
         : "";
-      const actionBtn = vm.installed
+
+      const dlButtonText = isDownloading
+        ? `Скачивание (${Math.round(vm.progress || 0)}%)`
+        : selectedProv === "ollama"
+          ? `Скачать в Ollama${sizeText ? ` (${sizeText})` : ""}`
+          : selectedProv === "gguf"
+            ? `Скачать GGUF в кэш${sizeText ? ` (${sizeText})` : ""}`
+            : `Скачать веса SVDQ${sizeText ? ` (${sizeText})` : ""}`;
+
+      const actionBtn = isInstalledForProv
         ? `<div class="variant-actions">
-             <span class="card-action-btn active" style="width: auto;">${ICON_CHECK} ${escapeHtml(t("models.encoder_cached") || "На диске")}</span>
+             <span class="card-action-btn active" style="width: auto;">${ICON_CHECK} ${selectedProv === "ollama" ? "В Ollama" : "В кэше"}</span>
              <button type="button" class="btn-delete-files encoder-delete-btn" data-vision-id="${escapeHtml(vm.id)}" onclick="App.deleteVisionModelFromHub(this.dataset.visionId, this)" title="Удалить веса модели">${ICON_TRASH}<span>${escapeHtml(t("models.component_delete") || "Удалить")}</span></button>
            </div>`
-        : `<button type="button" class="btn-download encoder-download-btn" data-vision-id="${escapeHtml(vm.id)}" ${isDownloading ? "disabled" : ""} onclick="App.downloadVisionModelFromHub(this.dataset.visionId, this)">${ICON_DOWNLOAD}<span>${isDownloading ? `Скачивание (${Math.round(vm.progress || 0)}%)` : `${escapeHtml(t("models.encoder_download") || "Скачать")}${sizeText ? ` (${sizeText})` : ""}`}</span></button>`;
+        : `<div class="variant-actions" style="display: flex; gap: 6px; width: 100%;">
+             <button type="button" class="btn-download encoder-download-btn" style="flex: 1;" data-vision-id="${escapeHtml(vm.id)}" data-vision-provider="${escapeHtml(selectedProv)}" ${isDownloading ? "disabled" : ""} onclick="App.downloadVisionModelFromHub(this.dataset.visionId, this, this.dataset.visionProvider)">${ICON_DOWNLOAD}<span>${escapeHtml(dlButtonText)}</span></button>
+             ${anyInstalled ? `<button type="button" class="btn-delete-files encoder-delete-btn" data-vision-id="${escapeHtml(vm.id)}" onclick="App.deleteVisionModelFromHub(this.dataset.visionId, this)" title="Удалить установленную копию">${ICON_TRASH}</button>` : ""}
+           </div>`;
 
       card.innerHTML = `
         <div>
@@ -1495,9 +1551,10 @@ const App = {
           </div>
           ${vm.description ? `<p style="font-size: 12px; color: var(--text-secondary); margin: 6px 0 8px; line-height: 1.4;">${escapeHtml(vm.description)}</p>` : ""}
           <div class="encoder-meta">
-            ${vm.primary_file ? `<span>📁 ${escapeHtml(t("models.encoder_file") || "Файл")}: <code>${escapeHtml(vm.primary_file)}</code></span>` : `<span>🏷 ID: <code>${escapeHtml(vm.id)}</code></span>`}
+            <span>🏷 ID: <code>${escapeHtml(vm.id)}</code></span>
+            ${vm.primary_file ? `<span>📁 ${escapeHtml(t("models.encoder_file") || "Файл")}: <code>${escapeHtml(vm.primary_file)}</code></span>` : ""}
             ${vm.repo_id ? `<span>🌐 ${escapeHtml(t("models.encoder_repo") || "Репозиторий")}: <code>${escapeHtml(vm.repo_id)}</code></span>` : ""}
-            <span>⚙ Провайдер: <code>${escapeHtml(providerBadge)}</code>${sizeText ? ` · ${sizeText}` : ""}${vm.vram_min_gb ? ` · VRAM ≥ ${vm.vram_min_gb} GB` : ""}</span>
+            <span style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px;">⚙ Провайдер: ${providerSelectHtml}<span>${sizeText ? `· ${sizeText}` : ""}${vm.vram_min_gb ? ` · VRAM ≥ ${vm.vram_min_gb} GB` : ""}</span></span>
           </div>
           ${usedByHtml}
         </div>
@@ -1534,14 +1591,18 @@ const App = {
     }
   },
 
-  async downloadVisionModelFromHub(modelId, btnEl) {
+  async downloadVisionModelFromHub(modelId, btnEl, provider = null) {
     if (!modelId) return;
+    const vm = (this.state.visionModels || []).find(m => m.id === modelId);
+    const chosenProvider = provider || (vm ? this.getVisionCardProvider(vm) : null);
     if (btnEl) {
       btnEl.disabled = true;
       btnEl.classList.add("is-loading");
     }
     try {
-      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {});
+      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {
+        provider: chosenProvider,
+      });
       const vm = (this.state.visionModels || []).find(m => m.id === modelId);
       const label = vm?.name || modelId;
       this.toast("info", `Скачивание «${label}» добавлено в Загрузки...`);
@@ -14193,10 +14254,27 @@ Object.assign(App, {
     }
   },
 
+  onInpaintVisionProviderChange(provider) {
+    const prov = provider || "auto";
+    try { localStorage.setItem("lazysd_inpaint_vision_provider", prov); } catch (_) {}
+    this.renderInpaintVisionModels();
+  },
+
   renderInpaintVisionModels() {
     const state = this.getInpaintState();
     const select = document.getElementById("inpaint-vision-model-select");
+    const provSelect = document.getElementById("inpaint-vision-provider-select");
     if (!state || !select) return;
+
+    let savedProv = "auto";
+    try { savedProv = localStorage.getItem("lazysd_inpaint_vision_provider") || "auto"; } catch (_) {}
+    if (provSelect && !state._visionProvInit) {
+      if ([...provSelect.options].some(o => o.value === savedProv)) {
+        provSelect.value = savedProv;
+      }
+      state._visionProvInit = true;
+    }
+    const activeProv = provSelect?.value || savedProv || "auto";
 
     let savedModel = "";
     try { savedModel = localStorage.getItem("lazysd_inpaint_vision_model") || ""; } catch (_) {}
@@ -14207,7 +14285,18 @@ Object.assign(App, {
       : (savedModel || this.state?.settings?.vision_model || "");
 
     select.innerHTML = "";
-    const models = Array.isArray(state.visionModels) ? state.visionModels : [];
+    const allModels = Array.isArray(state.visionModels) ? state.visionModels : [];
+    const models = activeProv === "heuristic"
+      ? []
+      : allModels.filter(m => {
+          if (activeProv === "auto") return true;
+          const sup = Array.isArray(m.supported_providers) && m.supported_providers.length
+            ? m.supported_providers
+            : [m.provider];
+          if (activeProv === "gguf") return m.provider === "gguf" || sup.includes("gguf");
+          return m.provider === activeProv || sup.includes(activeProv);
+        });
+
     for (const m of models) {
       const opt = document.createElement("option");
       opt.value = m.id;
@@ -14224,14 +14313,18 @@ Object.assign(App, {
       : this.maskT("inpaint.assistant.ollama_offline", "Ollama не запущена (эвристика)");
     select.appendChild(heurOpt);
 
-    const prevEntry = models.find((m) => m.id === prevValue);
-    const prevUsable = prevValue === "heuristic" || (prevEntry && prevEntry.installed);
-    if (prevValue && [...select.options].some((o) => o.value === prevValue) && (prevUsable || state._visionRendered)) {
-      select.value = prevValue;
+    if (activeProv === "heuristic") {
+      select.value = "heuristic";
     } else {
-      const installed = models.find((m) => m.installed);
-      const recommended = models.find((m) => m.recommended);
-      select.value = (installed || recommended)?.id || "heuristic";
+      const prevEntry = models.find((m) => m.id === prevValue);
+      const prevUsable = prevValue === "heuristic" || (prevEntry && prevEntry.installed);
+      if (prevValue && prevValue !== "heuristic" && [...select.options].some((o) => o.value === prevValue) && (prevUsable || state._visionRendered)) {
+        select.value = prevValue;
+      } else {
+        const installed = models.find((m) => m.installed);
+        const recommended = models.find((m) => m.recommended);
+        select.value = (installed || recommended)?.id || "heuristic";
+      }
     }
     state._visionRendered = true;
     this.onInpaintVisionModelChange();
@@ -14266,7 +14359,13 @@ Object.assign(App, {
         badge.style.display = "inline-block";
         badge.textContent = "⏳ 0%";
       }
-      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {});
+      const provSelect = document.getElementById("inpaint-vision-provider-select");
+      const chosenProv = (provSelect?.value && provSelect.value !== "auto" && provSelect.value !== "heuristic")
+        ? provSelect.value
+        : null;
+      const res = await this.apiPost(`/api/vision/models/${encodeURIComponent(modelId)}/download`, {
+        provider: chosenProv,
+      });
       const entry = (state.visionModels || []).find((m) => m.id === modelId);
       if (res?.job_id && this.startDownloadPolling) {
         this.startDownloadPolling(res.job_id, {
@@ -14381,9 +14480,11 @@ Object.assign(App, {
     const instruction = (instrEl?.value || "").trim();
     try { localStorage.setItem("lazysd_inpaint_instruction", instruction); } catch (_) {}
 
+    const provSelect = document.getElementById("inpaint-vision-provider-select");
+    const selectedProvider = provSelect?.value || "auto";
     const visionSelect = document.getElementById("inpaint-vision-model-select");
     const selectedVision = visionSelect?.value || "qwen2.5vl:3b";
-    const useVlm = selectedVision !== "heuristic";
+    const useVlm = selectedVision !== "heuristic" && selectedProvider !== "heuristic";
     const crop = this.getInpaintCropState() || { mode: "auto", padding: 64, box: null };
 
     const btn = document.getElementById("inpaint-generate-prompt-btn");
@@ -14404,6 +14505,7 @@ Object.assign(App, {
         crop_box: crop.mode === "manual" ? crop.box : null,
         crop_padding: Math.max(0, Math.min(512, parseInt(crop.padding, 10) || 64)),
         vision_model: useVlm ? selectedVision : null,
+        vision_provider: selectedProvider,
         use_vlm: useVlm,
       });
 

@@ -41,17 +41,93 @@ from .vision_models import (
 logger = logging.getLogger("quantfunc.vision_runtime")
 
 SYSTEM_PROMPT = (
-    "You are a prompt engineer for Stable Diffusion / Flux inpainting.\n"
-    "You receive: the whole page with the edited region highlighted in red, "
-    "and a close-up crop of that region.\n"
-    "Return ONLY valid JSON:\n"
-    '{"prompt": "...", "negative_prompt": "..."}\n'
-    "The prompt must describe what should appear inside the masked area: "
-    "colors, texture, style, continuity with surroundings.\n"
-    "Do not transcribe or reproduce any text from the image.\n"
-    'Do not include "no text" instructions as text to render; use the negative prompt.\n'
-    "Max 60 words."
+    "You are a prompt engineer for Stable Diffusion / FLUX Inpainting.\n"
+    "In both images, the BRIGHT RED highlighted shapes mark the EXACT masked pixels to be repainted.\n"
+    "CRITICAL RULES:\n"
+    "1. Describe ONLY what should appear INSIDE the bright red masked shapes AFTER the edit.\n"
+    "2. NEVER describe characters, faces, hair, hats, or clothing that are OUTSIDE the red mask, "
+    "even if a character stands next to or between red masked shapes!\n"
+    "3. If the user asks to delete/remove/clean text, SFX, sound effects, speech bubbles, or objects: "
+    "do NOT mention the removed text/object and do NOT describe nearby characters. Describe ONLY the "
+    "underlying background surface, colors, lighting, gradients, and brush texture that should seamlessly "
+    "fill the red shapes behind the removed element.\n"
+    "4. negative_prompt MUST be a comma-separated list of forbidden artifacts (e.g. "
+    '"japanese text, sfx, kanji, katakana, letters, speech bubble, watermark, blurry, seam"). '
+    'NEVER write "no background", "no colors", "no details", "no style", "no characters", or words starting with "no ".\n'
+    '5. Return ONLY valid JSON: {"prompt": "...", "negative_prompt": "..."} (prompt max 40 words).'
 )
+
+_LAST_ACTIVE_OLLAMA_MODEL: Optional[str] = None
+
+_BAD_NEGATIVE_CONCEPTS = {
+    "background",
+    "backgrounds",
+    "color",
+    "colors",
+    "colour",
+    "colours",
+    "detail",
+    "details",
+    "style",
+    "styles",
+    "character",
+    "characters",
+    "person",
+    "people",
+    "art",
+    "artwork",
+    "illustration",
+    "image",
+    "shading",
+    "lighting",
+    "texture",
+    "textures",
+    "quality",
+    "high quality",
+    "anime",
+    "manga",
+    "lineart",
+    "lines",
+    "scene",
+}
+
+_REMOVAL_KEYWORDS_RE = re.compile(
+    r"\b(delete|remove|erase|clean|clear|strip|wi?thout|rid\s+of|sfx|text|kanji|katakana|hiragana|subtitle|bubble|watermark|"
+    r"убрать|убери|удалить|удали|стереть|сотри|очистить|очисти|замазать|без\s+текста|текст|звук|баббл)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_removal_instruction(instruction: str) -> bool:
+    return bool(_REMOVAL_KEYWORDS_RE.search(instruction or ""))
+
+
+def _sanitize_negative_prompt(neg_raw: str, instruction: str = "") -> str:
+    tokens: List[str] = []
+    seen = set()
+    for part in re.split(r"[,;\n]+", neg_raw or ""):
+        t = part.strip().strip('."\'')
+        if not t:
+            continue
+        t_clean = re.sub(r"^(?:no|without|not)\s+", "", t, flags=re.IGNORECASE).strip()
+        if not t_clean:
+            continue
+        low = t_clean.lower()
+        if low in _BAD_NEGATIVE_CONCEPTS or low in ("none", "n/a", "null", "nothing"):
+            continue
+        if low not in seen:
+            seen.add(low)
+            tokens.append(t_clean)
+
+    if _is_removal_instruction(instruction):
+        for req in ("text", "japanese sfx", "kanji", "katakana", "letters", "speech bubble", "watermark", "blurry", "visible seam"):
+            if req.lower() not in seen:
+                seen.add(req.lower())
+                tokens.append(req)
+
+    if not tokens:
+        return DEFAULT_NEGATIVE_PROMPT
+    return ", ".join(tokens)[:500]
 
 _FLUX3_PUP_PROMPTS_CACHE: Optional[Dict[str, str]] = None
 
@@ -187,7 +263,21 @@ def check_ollama_status(ollama_url: str, timeout: float = 2.5) -> Dict[str, Any]
     }
 
 
-def parse_vlm_response_text(raw_text: str) -> Tuple[str, str]:
+def _sanitize_positive_prompt(prompt_raw: str) -> str:
+    p = (prompt_raw or "").strip()
+    # Remove any meta-references to the red mask overlay so the diffusion model doesn't paint red shapes
+    p = re.sub(
+        r"\s*(?:to\s+seamlessly\s+fill|filling|inside|within|in)\s+the\s+(?:bright\s+)?(?:red[-\s]+)?(?:masked|highlighted)\s+(?:shapes|area|region|pixels|zone)s?\.?$",
+        "",
+        p,
+        flags=re.IGNORECASE,
+    )
+    p = re.sub(r"\bbright\s+red\s+(?:masked|highlighted)\s+(?:shapes|area|region|pixels)\b", "surrounding area", p, flags=re.IGNORECASE)
+    p = re.sub(r"\bred\s+(?:masked|highlighted)\s+(?:shapes|area|region|pixels)\b", "surrounding area", p, flags=re.IGNORECASE)
+    return p.strip().rstrip(",").strip()
+
+
+def parse_vlm_response_text(raw_text: str, instruction: str = "") -> Tuple[str, str]:
     """Extract ``(prompt, negative_prompt)`` from VLM or FLUX 3 PUP text output."""
     text = (raw_text or "").strip()
     if not text:
@@ -209,12 +299,11 @@ def parse_vlm_response_text(raw_text: str) -> Tuple[str, str]:
         try:
             obj = json.loads(cand)
             if isinstance(obj, dict):
-                prompt = str(obj.get("prompt") or "").strip()
+                prompt = _sanitize_positive_prompt(str(obj.get("prompt") or ""))
                 neg = str(obj.get("negative_prompt") or obj.get("negative") or "").strip()
                 if prompt:
-                    if not neg:
-                        neg = DEFAULT_NEGATIVE_PROMPT
-                    return prompt[:1000], neg[:500]
+                    neg_clean = _sanitize_negative_prompt(neg, instruction=instruction)
+                    return prompt[:1000], neg_clean[:500]
         except Exception:
             continue
 
@@ -384,8 +473,11 @@ def generate_vlm_prompt(
         )
         return parse_vlm_response_text(caption)
 
+    global _LAST_ACTIVE_OLLAMA_MODEL
     base = validate_ollama_url(ollama_url)
     use_flux3_pup = is_flux3_pup_model(model_id)
+    effective_keep_alive = keep_alive if (keep_alive and keep_alive != "0s") else "5m"
+    _LAST_ACTIVE_OLLAMA_MODEL = model_id
 
     if use_flux3_pup:
         sys_prompts = get_flux3_pup_system_prompts()
@@ -393,13 +485,14 @@ def generate_vlm_prompt(
             "Seamlessly restore the area marked in red in the first image and shown close-up in the second image."
         )
         user_content = (
-            "Reference images follow in order (the first image, the second image).\n"
-            f"User request: {req_text}\nOutput the caption."
+            "Reference images follow in order (the first image, the second image). "
+            "Only the bright RED highlighted mask area is being repainted; ignore unmasked characters outside the red area.\n"
+            f"User request for the red masked area: {req_text}\nOutput the caption."
         )
         payload = {
             "model": model_id,
             "stream": False,
-            "keep_alive": keep_alive or "0s",
+            "keep_alive": effective_keep_alive,
             "think": False,
             "messages": [
                 {"role": "system", "content": sys_prompts["i2i"]},
@@ -410,33 +503,51 @@ def generate_vlm_prompt(
                 },
             ],
             "options": {
-                "temperature": 1.0,
+                "temperature": 0.7,
                 "top_k": 1,
                 "top_p": 0.95,
                 "presence_penalty": 0.0,
                 "repeat_penalty": 1.0,
-                "num_predict": 420,
+                "num_predict": 220,
             },
         }
     else:
         user_parts = []
-        if instruction and instruction.strip():
-            user_parts.append(f"User instruction: {instruction.strip()[:500]}")
+        instr_clean = (instruction or "").strip()[:500]
+        is_removal = _is_removal_instruction(instr_clean)
+        colors = ", ".join((analysis_hint or {}).get("dominant_colors") or [])
+        rtype = (analysis_hint or {}).get("region_type") or "colored_art"
+
+        if instr_clean:
+            user_parts.append(f"User edit instruction for the BRIGHT RED masked pixels: {instr_clean}")
         else:
-            user_parts.append("User instruction: seamlessly inpaint and restore the masked area.")
-        if analysis_hint:
-            colors = ", ".join(analysis_hint.get("dominant_colors") or [])
-            rtype = analysis_hint.get("region_type") or "colored_art"
-            user_parts.append(f"Context hint: region_type={rtype}, surrounding_colors=[{colors}].")
+            user_parts.append("User edit instruction: seamlessly inpaint and restore the background inside the BRIGHT RED masked pixels.")
+
+        if colors:
+            user_parts.append(f"Measured boundary colors around the red mask: [{colors}] (region_type={rtype}).")
+
+        if is_removal:
+            user_parts.append(
+                "IMPORTANT: This is an OBJECT/TEXT/SFX REMOVAL task! "
+                "Do NOT describe any character, face, hair, hat, or outfit standing next to the red mask. "
+                "Describe ONLY the clean background surface, lighting, colors, and art texture that should fill "
+                f"the red masked shapes after the unwanted SFX/text is erased (matching surrounding {colors or 'colors'})."
+            )
+        else:
+            user_parts.append(
+                "IMPORTANT: Focus strictly on the BRIGHT RED highlighted mask shapes in Image 2. "
+                "Do NOT caption unmasked characters outside the red highlight."
+            )
+
         user_parts.append(
-            "Image 1 shows the full page with the red mask overlay. "
-            "Image 2 shows the close-up crop around the masked region. "
             'Respond ONLY with JSON: {"prompt": "...", "negative_prompt": "..."}.'
         )
         payload = {
             "model": model_id,
             "stream": False,
-            "keep_alive": keep_alive or "0s",
+            "format": "json",
+            "think": False,
+            "keep_alive": effective_keep_alive,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
@@ -446,8 +557,8 @@ def generate_vlm_prompt(
                 },
             ],
             "options": {
-                "temperature": 0.2,
-                "num_predict": 220,
+                "temperature": 0.15,
+                "num_predict": 130,
             },
         }
 
@@ -459,7 +570,7 @@ def generate_vlm_prompt(
     )
     msg = resp.get("message") or {}
     content = msg.get("content") or resp.get("response") or ""
-    return parse_vlm_response_text(str(content))
+    return parse_vlm_response_text(str(content), instruction=instruction)
 
 
 def upsample_flux3_prompt(
@@ -595,20 +706,31 @@ def upsample_flux3_prompt(
 
 
 def unload_vision_model(ollama_url: str, model_id: Optional[str] = None, timeout: float = 3.0) -> bool:
-    """Explicitly unload the active VLM from Ollama VRAM before starting diffusion."""
-    if not model_id or model_id == "flux3-pup-nunchaku":
+    """Explicitly unload any active VLM from Ollama VRAM before starting diffusion."""
+    global _LAST_ACTIVE_OLLAMA_MODEL
+    targets = []
+    for cand in (_LAST_ACTIVE_OLLAMA_MODEL, model_id):
+        if cand and cand != "flux3-pup-nunchaku" and cand not in targets:
+            targets.append(cand)
+    if not targets:
         return False
+    unloaded = False
     try:
         base = validate_ollama_url(ollama_url)
-        _http_json(
-            f"{base}/api/generate",
-            method="POST",
-            payload={"model": model_id, "keep_alive": 0},
-            timeout=timeout,
-        )
-        return True
+        for t_model in targets:
+            try:
+                _http_json(
+                    f"{base}/api/generate",
+                    method="POST",
+                    payload={"model": t_model, "keep_alive": 0},
+                    timeout=timeout,
+                )
+                unloaded = True
+            except Exception:
+                pass
+        return unloaded
     except Exception as exc:
-        logger.debug("[vision] Unload skipped or failed for %s: %s", model_id, exc)
+        logger.debug("[vision] Unload skipped or failed: %s", exc)
         return False
 
 
@@ -729,6 +851,7 @@ def start_vision_model_download(
     models_dir: Optional[Path] = None,
     hf_token: Optional[str] = None,
     job_id: Optional[str] = None,
+    preferred_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Start (or attach to) an asynchronous download job for a VLM or FLUX.3 PUP model."""
     existing = get_download_state(model_id)
@@ -736,19 +859,23 @@ def start_vision_model_download(
         return existing
 
     entry = get_catalog_entry(model_id)
+    eff_provider = (preferred_provider or (entry.get("provider") if entry else "ollama") or "ollama").strip().lower()
+    if entry and entry.get("provider") == "nunchaku":
+        eff_provider = "nunchaku"
+
     state = set_download_state(
         model_id,
         status="downloading",
         job_id=job_id,
         progress=0.0,
-        detail="Starting download...",
+        detail=f"Starting download ({eff_provider})...",
     )
     job_id = state["job_id"]
 
     def _worker() -> None:
         try:
-            # HuggingFace-hosted PUP weights (Nunchaku SVDQ & Unsloth GGUF) download directly via Hub DownloadManager
-            if entry and entry.get("provider") in ("nunchaku", "gguf") and entry.get("repo_id"):
+            # Download via HuggingFace DownloadManager when provider is 'nunchaku' or 'gguf' (local HF cache)
+            if entry and eff_provider in ("nunchaku", "gguf", "llamacpp") and entry.get("repo_id") and entry.get("primary_file"):
                 _download_hf_vision_model(
                     entry,
                     job_id=job_id,
@@ -846,7 +973,7 @@ def delete_vision_model(
             primary_path.unlink(missing_ok=True)
             removed_local = True
 
-    if entry and entry.get("provider") in ("nunchaku", "gguf"):
+    if entry and entry.get("provider") == "nunchaku":
         clear_download_state(model_id)
         return True
 

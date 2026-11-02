@@ -159,9 +159,9 @@ class Settings(BaseModel):
     vision_provider: str = "ollama"
     vision_model: str = "qwen2.5vl:3b"
     vision_ollama_url: str = "http://127.0.0.1:11434"
-    vision_keep_alive: str = "0s"
+    vision_keep_alive: str = "5m"
     vision_timeout_sec: int = 120
-    vision_max_image_dim: int = 1024
+    vision_max_image_dim: int = 640
     vision_fallback_enabled: bool = True
 
     # ---------- State ----------
@@ -199,8 +199,9 @@ class Settings(BaseModel):
     @field_validator("vision_provider")
     @classmethod
     def _validate_vision_provider(cls, v: str) -> str:
-        if v not in ("ollama", "llamacpp"):
-            raise ValueError(f"vision_provider must be 'ollama' or 'llamacpp', got {v!r}")
+        allowed = ("auto", "ollama", "gguf", "llamacpp", "nunchaku", "heuristic")
+        if v not in allowed:
+            raise ValueError(f"vision_provider must be one of {allowed}, got {v!r}")
         return v
 
     @field_validator("vision_timeout_sec")

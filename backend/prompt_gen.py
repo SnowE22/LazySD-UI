@@ -128,45 +128,93 @@ def _resize_max_dim(img: Image.Image, max_dim: int) -> Image.Image:
 def _encode_image_b64(img: Image.Image) -> str:
     rgb = img.convert("RGB")
     buf = io.BytesIO()
-    rgb.save(buf, format="PNG", optimize=True)
+    rgb.save(buf, format="JPEG", quality=88)
     data = buf.getvalue()
     if len(data) > MAX_ENCODED_IMAGE_BYTES:
         buf = io.BytesIO()
-        rgb.save(buf, format="JPEG", quality=85)
+        rgb.save(buf, format="JPEG", quality=75)
         data = buf.getvalue()
     if len(data) > MAX_ENCODED_IMAGE_BYTES:
         raise PromptGenValidationError("Encoded image exceeds 8 MB payload limit")
     return base64.b64encode(data).decode("ascii")
 
 
+def _apply_red_mask_highlight(
+    img: Image.Image,
+    mask_pil_full: Image.Image,
+    *,
+    alpha_strength: float = 0.44,
+    dim_outside: float = 0.0,
+) -> Image.Image:
+    """Overlay bright red highlight on masked pixels and optionally dim unmasked pixels."""
+    mask_resized = mask_pil_full.resize(img.size, Image.Resampling.BILINEAR)
+    mask_2d = np.asarray(mask_resized, dtype=np.float32) / 255.0
+    mask_norm = mask_2d[:, :, None]
+
+    arr = np.asarray(img, dtype=np.float32)
+    if dim_outside > 0.0:
+        outside_factor = 1.0 - dim_outside * (1.0 - mask_norm)
+        arr = arr * outside_factor
+
+    red_layer = np.zeros_like(arr)
+    red_layer[:, :, 0] = 245.0
+    red_layer[:, :, 1] = 25.0
+    red_layer[:, :, 2] = 40.0
+    alpha = mask_norm * alpha_strength
+    blended = np.clip(arr * (1.0 - alpha) + red_layer * alpha, 0.0, 255.0)
+
+    # Draw a crisp bright red/yellow edge contour around the mask so VLM distinguishes mask vs character
+    binary = mask_2d >= 0.25
+    if binary.any():
+        padded = np.pad(binary, 1, mode="edge")
+        eroded = (
+            padded[1:-1, 1:-1]
+            & padded[:-2, 1:-1]
+            & padded[2:, 1:-1]
+            & padded[1:-1, :-2]
+            & padded[1:-1, 2:]
+        )
+        edge = binary & (~eroded)
+        blended[edge, 0] = 255.0
+        blended[edge, 1] = 60.0
+        blended[edge, 2] = 20.0
+
+    return Image.fromarray(blended.astype(np.uint8), mode="RGB")
+
+
 def build_vlm_images(
     source_image: Image.Image,
     raw_mask: np.ndarray,
     crop_box: Tuple[int, int, int, int],
-    max_dim: int = 1024,
+    max_dim: int = 640,
 ) -> Tuple[str, str]:
-    """Build ``(overview_b64, crop_b64)`` for VLM consumption."""
+    """Build ``(overview_b64, crop_b64)`` for VLM consumption (capped to 560px for fast ViT prefill)."""
+    vlm_dim = min(max(256, int(max_dim or 560)), 560)
     rgb = source_image.convert("RGB")
-    over_img = _resize_max_dim(rgb, max_dim)
-
-    # Resize mask to match overview dimensions and composite a red overlay (alpha 0.40)
     mask_u8 = (np.clip(raw_mask, 0.0, 1.0) * 255.0).astype(np.uint8)
-    mask_pil = Image.fromarray(mask_u8, mode="L").resize(over_img.size, Image.Resampling.BILINEAR)
-    mask_norm = np.asarray(mask_pil, dtype=np.float32)[:, :, None] / 255.0
+    mask_full_pil = Image.fromarray(mask_u8, mode="L")
 
-    over_arr = np.asarray(over_img, dtype=np.float32)
-    red_layer = np.zeros_like(over_arr)
-    red_layer[:, :, 0] = 235.0
-    red_layer[:, :, 1] = 35.0
-    red_layer[:, :, 2] = 45.0
-    alpha = mask_norm * 0.42
-    blended = np.clip(over_arr * (1.0 - alpha) + red_layer * alpha, 0.0, 255.0).astype(np.uint8)
-    overview_composited = Image.fromarray(blended, mode="RGB")
+    over_img = _resize_max_dim(rgb, vlm_dim)
+    overview_composited = _apply_red_mask_highlight(
+        over_img,
+        mask_full_pil,
+        alpha_strength=0.42,
+        dim_outside=0.0,
+    )
 
     x0, y0, x1, y1 = (int(v) for v in crop_box)
-    crop_img = _resize_max_dim(rgb.crop((x0, y0, x1, y1)), max_dim)
+    crop_rgb = _resize_max_dim(rgb.crop((x0, y0, x1, y1)), vlm_dim)
+    crop_mask_pil = mask_full_pil.crop((x0, y0, x1, y1))
+    # Highlight the masked pixels in the close-up crop too so VLM never confuses an unmasked character
+    # inside the crop bounding box with the masked SFX/background around them!
+    crop_composited = _apply_red_mask_highlight(
+        crop_rgb,
+        crop_mask_pil,
+        alpha_strength=0.45,
+        dim_outside=0.18,
+    )
 
-    return _encode_image_b64(overview_composited), _encode_image_b64(crop_img)
+    return _encode_image_b64(overview_composited), _encode_image_b64(crop_composited)
 
 
 def _compute_cache_key(
@@ -212,6 +260,7 @@ def generate_inpaint_prompt(
     crop_box: Any = None,
     crop_padding: int = 64,
     vision_model: Optional[str] = None,
+    vision_provider: Optional[str] = None,
     use_vlm: bool = True,
     settings: Any = None,
     project_root: Optional[Path] = None,
@@ -278,7 +327,8 @@ def generate_inpaint_prompt(
         or str(getattr(settings, "vision_model", "qwen2.5vl:3b") or "qwen2.5vl:3b")
     )
 
-    effective_use_vlm = bool(use_vlm and vision_enabled)
+    req_provider = (vision_provider or getattr(settings, "vision_provider", "auto") or "auto").strip().lower()
+    effective_use_vlm = bool(use_vlm and vision_enabled and req_provider != "heuristic")
     cache_key = _compute_cache_key(
         resolved_source=resolved_source,
         mask_array=raw_mask,
@@ -332,15 +382,26 @@ def generate_inpaint_prompt(
                         status_code=503,
                     )
                 warnings.append("Ollama is not running; used local heuristic fallback.")
-            elif not is_tag_matching(selected_model, status_info["installed_tags"]):
+            elif is_tag_matching(selected_model, status_info["installed_tags"]):
+                can_run_vlm = True
+            elif cat_entry and is_local_vision_model_installed(cat_entry, models_dir=models_dir) and status_info["installed_tags"]:
+                # Local GGUF is downloaded in cache and Ollama is running — use best available Ollama VLM tag
+                fallback_tag = next(
+                    (t for t in status_info["installed_tags"] if any(k in t.lower() for k in ("qwen", "flux-3", "minicpm", "llava"))),
+                    status_info["installed_tags"][0],
+                )
+                warnings.append(
+                    f"Local GGUF '{selected_model}' is in HF cache; executed via active Ollama VLM '{fallback_tag}'."
+                )
+                selected_model = fallback_tag
+                can_run_vlm = True
+            else:
                 if not fallback_enabled:
                     raise VisionRuntimeError(
                         f"Vision model '{selected_model}' is not installed in Ollama.",
                         status_code=409,
                     )
                 warnings.append(f"Vision model '{selected_model}' is not installed; used local heuristic fallback.")
-            else:
-                can_run_vlm = True
 
         if can_run_vlm:
             try:
