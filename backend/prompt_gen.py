@@ -93,7 +93,10 @@ def resolve_safe_source_path(
     if not candidate.is_absolute():
         resolved_candidates.append((root / candidate).resolve())
         for rdir in roots:
+            # Uploads are stored under <output_dir>/uploads and referenced as "uploads/<name>".
+            resolved_candidates.append((rdir / candidate).resolve())
             resolved_candidates.append((rdir / candidate.name).resolve())
+            resolved_candidates.append((rdir / "uploads" / candidate.name).resolve())
     else:
         resolved_candidates.append(candidate.resolve())
 
