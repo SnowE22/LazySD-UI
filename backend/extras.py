@@ -922,6 +922,13 @@ class ExtrasWorker:
         Path(job_json_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
         env = os.environ.copy()
+        from .engine import get_cuda_search_paths
+        cuda_paths = get_cuda_search_paths()
+        existing_path = env.get("PATH", "")
+        extra_paths = [str(settings.engine_dir)] + [str(p) for p in cuda_paths if p.exists()]
+        if existing_path:
+            extra_paths.append(existing_path)
+        env["PATH"] = os.pathsep.join(extra_paths)
         env["PYTHONPATH"] = os.pathsep.join([str(PROJECT_ROOT)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
         env["PYTHONIOENCODING"] = "utf-8"
         if settings.huggingface_token:
