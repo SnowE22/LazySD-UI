@@ -631,6 +631,92 @@ _STATUS_RE = re.compile(r"\[status\]\s*(.+)")
 _ERROR_RE = re.compile(r"\[error\]\s*(.+)")
 
 
+def _detect_klein_size_tag(*ident_parts: Any) -> Optional[str]:
+    """Identify whether a FLUX/Klein model or repo belongs to '9b', '4b', or 'flux3'."""
+    combined = " ".join(str(p or "") for p in ident_parts).lower()
+    if "flux3" in combined or "flux-3" in combined or "flux_3" in combined:
+        return "flux3"
+    if not ("klein" in combined or "flux" in combined):
+        return None
+    if re.search(r"(?:^|[^a-z0-9])9[_-]?b(?:$|[^a-z0-9])", combined):
+        return "9b"
+    if re.search(r"(?:^|[^a-z0-9])4[_-]?b(?:$|[^a-z0-9])", combined):
+        return "4b"
+    return None
+
+
+def _is_compatible_extras_text_encoder(te_spec_or_path: Any, size_tag: Optional[str]) -> bool:
+    """Ensure a text encoder candidate is a Nunchaku/Diffusers-compatible safetensors checkpoint
+    whose hidden dimension matches the target FLUX.2 Klein size ('9b' -> Qwen3-8B, '4b' -> Qwen3-4B).
+    """
+    if isinstance(te_spec_or_path, dict):
+        src = te_spec_or_path.get("source") if isinstance(te_spec_or_path.get("source"), dict) else {}
+        file_val = str(te_spec_or_path.get("file") or te_spec_or_path.get("path") or src.get("file_path") or "")
+        repo_val = str(src.get("repo_id") or te_spec_or_path.get("repo") or "")
+        ident = f"{te_spec_or_path.get('id', '')} {te_spec_or_path.get('name', '')} {repo_val} {file_val}".lower()
+    else:
+        file_val = str(te_spec_or_path or "")
+        ident = file_val.lower()
+
+    if file_val.lower().endswith(".gguf"):
+        return False
+
+    if size_tag == "9b":
+        # FLUX.2 Klein 9B uses Qwen3-8B (hidden_size=4096 -> 12288 context dim).
+        # Any 4B text encoder (hidden_size=2560 -> 7680 context dim) causes shape mismatch.
+        if re.search(r"(?:^|[^a-z0-9])4[_-]?b(?:$|[^a-z0-9])", ident):
+            return False
+    elif size_tag == "4b":
+        # FLUX.2 Klein 4B uses Qwen3-4B (hidden_size=2560 -> 7680 context dim).
+        if re.search(r"(?:^|[^a-z0-9])[89][_-]?b(?:$|[^a-z0-9])", ident):
+            return False
+        if "qwen3-text-nunchaku" in ident and "4b" not in ident:
+            return False
+
+    return True
+
+
+def _default_nunchaku_te_spec(size_tag: Optional[str]) -> Optional[dict]:
+    """Return the canonical shared Tonera SVDQ INT4 text encoder spec for Klein 4B / 9B."""
+    if size_tag == "9b":
+        return {
+            "id": "qwen3_8b_text_nunchaku",
+            "name": "Qwen3-8B Text Encoder (Tonera SVDQ INT4)",
+            "repo": "tonera/Qwen3-text-Nunchaku",
+            "file": "svdq-int4-Qwen3-text-Nunchaku.safetensors",
+            "path": "svdq-int4-Qwen3-text-Nunchaku.safetensors",
+            "source": {
+                "repo_id": "tonera/Qwen3-text-Nunchaku",
+                "file_path": "svdq-int4-Qwen3-text-Nunchaku.safetensors",
+            },
+        }
+    if size_tag == "4b":
+        return {
+            "id": "qwen3_4b_text_nunchaku",
+            "name": "Qwen3-4B Text Encoder (Tonera SVDQ INT4)",
+            "repo": "tonera/Qwen3-4B-text-Nunchaku",
+            "file": "svdq-int4-Qwen3-4B-text-Nunchaku.safetensors",
+            "path": "svdq-int4-Qwen3-4B-text-Nunchaku.safetensors",
+            "source": {
+                "repo_id": "tonera/Qwen3-4B-text-Nunchaku",
+                "file_path": "svdq-int4-Qwen3-4B-text-Nunchaku.safetensors",
+            },
+        }
+    return None
+
+
+def _is_compatible_peer_base_dir(peer_name: str, family: str, target_size_tag: Optional[str]) -> bool:
+    """Check whether a peer directory with model_index.json can serve as shared base pipeline."""
+    pname = peer_name.lower()
+    if not (("klein" in family or "flux" in family) and ("flux" in pname or "klein" in pname)):
+        return False
+    peer_tag = _detect_klein_size_tag(pname)
+    if target_size_tag != peer_tag:
+        return False
+    return True
+
+
+
 class ExtrasWorker:
     """Executes Nunchaku (tonera/vitoom-nunchaku) and OrbitQuant inference in the managed extras venv."""
 
@@ -847,20 +933,39 @@ class ExtrasWorker:
         cfg = float(getattr(request, "cfg", None) if getattr(request, "cfg", None) is not None else model.get_default_cfg())
 
         # Resolve Text Encoder (Priority: custom path -> model text_encoders / author shared repo -> repo local)
+        size_tag = _detect_klein_size_tag(getattr(model, "id", ""), primary_repo, getattr(model, "family", ""))
         te_path = None
         custom_te = getattr(request, "custom_text_encoder_path", None)
-        if custom_te and Path(custom_te).exists():
+        if custom_te and Path(custom_te).exists() and _is_compatible_extras_text_encoder(custom_te, size_tag):
             te_path = str(Path(custom_te))
         else:
             te_id = getattr(request, "text_encoder_id", None)
             te_spec = model.get_text_encoder(te_id) if hasattr(model, "get_text_encoder") else None
+            if te_spec and not _is_compatible_extras_text_encoder(te_spec, size_tag):
+                te_spec = None
             if not te_spec and getattr(model, "text_encoders", None):
-                installed_te = next((t for t in model.text_encoders if cache.find_existing_file((t.get("source") or {}).get("repo_id") or t.get("repo") or primary_repo, t.get("file") or t.get("path"))), None)
-                te_spec = installed_te or next((t for t in model.text_encoders if t.get("recommended")), model.text_encoders[0])
+                compat_tes = [
+                    t for t in model.text_encoders
+                    if isinstance(t, dict) and _is_compatible_extras_text_encoder(t, size_tag)
+                ]
+                installed_te = next(
+                    (
+                        t for t in compat_tes
+                        if cache.find_existing_file(
+                            (t.get("source") or {}).get("repo_id") or t.get("repo") or primary_repo,
+                            t.get("file") or t.get("path"),
+                        )
+                    ),
+                    None,
+                )
+                if compat_tes:
+                    te_spec = installed_te or next((t for t in compat_tes if t.get("recommended")), compat_tes[0])
+            if not te_spec:
+                te_spec = _default_nunchaku_te_spec(size_tag)
             if te_spec:
                 source = te_spec.get("source", {})
-                te_repo = source.get("repo_id") if isinstance(source, dict) else None
-                te_file = te_spec.get("file", "")
+                te_repo = (source.get("repo_id") if isinstance(source, dict) else None) or te_spec.get("repo")
+                te_file = te_spec.get("file") or te_spec.get("path") or ""
                 if te_repo and te_file:
                     shared_p = cache.find_existing_file(te_repo, te_file) or (cache.repo_dir_for(te_repo) / te_file)
                     if shared_p.exists():
@@ -878,7 +983,7 @@ class ExtrasWorker:
                         shared_dir.mkdir(parents=True, exist_ok=True)
                         src_inst.download_file(
                             repo_id=te_repo,
-                            file_path=source.get("file_path", te_file),
+                            file_path=(source.get("file_path") if isinstance(source, dict) else None) or te_file,
                             local_dir=shared_dir,
                             revision="main",
                         )
@@ -893,6 +998,8 @@ class ExtrasWorker:
         if not base_model_repo and getattr(model, "base_models", None):
             gpu_tier = gpu_info.tier if gpu_info else "50x-above"
             base_model_repo = model.base_models.get(gpu_tier) or model.base_models.get("50x-above") or model.base_models.get("50x-below")
+        if base_model_repo in (".", ""):
+            base_model_repo = None
 
         payload = {
             "engine": engine,
@@ -1134,42 +1241,59 @@ def _run_extras_job_cli(job_json_path: str) -> int:
             )
         has_local_pipeline = ((model_dir / "model_index.json").exists()
                               or (model_dir / "modular_model_index.json").exists())
-        base_source = str(model_dir) if has_local_pipeline else (payload.get("base_model_repo") or repo_id)
+        raw_base_repo = payload.get("base_model_repo")
+        if raw_base_repo in (".", ""):
+            raw_base_repo = None
+        base_source = str(model_dir) if has_local_pipeline else (raw_base_repo or repo_id)
+        target_size_tag = _detect_klein_size_tag(model_dir.name, repo_id, family)
         if not has_local_pipeline:
             cache_dir = model_dir.parent
             if cache_dir.is_dir():
                 for peer in cache_dir.iterdir():
                     if peer.is_dir() and peer != model_dir:
                         if (peer / "model_index.json").exists():
-                            peer_name = peer.name.lower()
-                            if ("klein" in family or "flux" in family) and ("flux" in peer_name or "klein" in peer_name):
+                            if _is_compatible_peer_base_dir(peer.name, family, target_size_tag):
                                 base_source = str(peer)
                                 print(f"[status] Using family shared base pipeline from '{peer.name}'", flush=True)
                                 break
         te_path_str = payload.get("text_encoder_path")
         te_path = Path(te_path_str) if te_path_str else None
+        if te_path and not _is_compatible_extras_text_encoder(str(te_path), target_size_tag):
+            print(
+                f"[warning] Ignoring incompatible text encoder '{te_path.name}' for target size '{target_size_tag}'",
+                flush=True,
+            )
+            te_path = None
 
         te_obj = None
         if te_path and te_path.exists():
             print(f"[status] Loading Text Encoder from {te_path.name}...", flush=True)
-            if is_flux3 and ("qwen3-vl" in te_path.name.lower() or "qwen3_vl" in te_path.name.lower()):
+            te_name_lower = te_path.name.lower()
+            if "qwen" in te_name_lower:
                 try:
-                    from nunchaku.models.text_encoders import NunchakuQwen3VLEncoderModel
-                    te_obj = NunchakuQwen3VLEncoderModel.from_pretrained(str(te_path), torch_dtype=torch.bfloat16)
-                except Exception as e:
-                    print(f"[warning] Could not load NunchakuQwen3VLEncoderModel: {e}", flush=True)
-            elif "qwen3-vl" in te_path.name.lower() or "qwen2-vl" in te_path.name.lower():
-                try:
-                    from nunchaku.models.text_encoders import NunchakuQwen2VLTextEncoderModel
-                    te_obj = NunchakuQwen2VLTextEncoderModel.from_pretrained(str(te_path), torch_dtype=torch.bfloat16)
-                except Exception as e:
-                    print(f"[warning] Could not load NunchakuQwen2VLTextEncoderModel: {e}", flush=True)
-            elif "qwen3" in te_path.name.lower():
-                try:
-                    from nunchaku.models.text_encoders import NunchakuQwen3TextEncoderModel
-                    te_obj = NunchakuQwen3TextEncoderModel.from_pretrained(str(te_path), torch_dtype=torch.bfloat16)
-                except Exception as e:
-                    print(f"[warning] Could not load NunchakuQwen3TextEncoderModel: {e}", flush=True)
+                    from nunchaku import NunchakuQwenEncoderModel
+                    te_obj = NunchakuQwenEncoderModel.from_pretrained(str(te_path), torch_dtype=torch.bfloat16)
+                except Exception as e_dispatch:
+                    if is_flux3 and ("qwen3-vl" in te_name_lower or "qwen3_vl" in te_name_lower):
+                        try:
+                            from nunchaku.models.text_encoders import NunchakuQwen3VLEncoderModel
+                            te_obj = NunchakuQwen3VLEncoderModel.from_pretrained(str(te_path), torch_dtype=torch.bfloat16)
+                        except Exception as e:
+                            print(f"[warning] Could not load NunchakuQwen3VLEncoderModel: {e}", flush=True)
+                    elif "qwen3-vl" in te_name_lower or "qwen2-vl" in te_name_lower:
+                        try:
+                            from nunchaku.models.text_encoders import NunchakuQwen2VLTextEncoderModel
+                            te_obj = NunchakuQwen2VLTextEncoderModel.from_pretrained(str(te_path), torch_dtype=torch.bfloat16)
+                        except Exception as e:
+                            print(f"[warning] Could not load NunchakuQwen2VLTextEncoderModel: {e}", flush=True)
+                    elif "qwen3" in te_name_lower:
+                        try:
+                            from nunchaku.models.text_encoders import NunchakuQwen3TextEncoderModel
+                            te_obj = NunchakuQwen3TextEncoderModel.from_pretrained(str(te_path), torch_dtype=torch.bfloat16)
+                        except Exception as e:
+                            print(f"[warning] Could not load NunchakuQwen3TextEncoderModel: {e}", flush=True)
+                    else:
+                        print(f"[warning] Could not load NunchakuQwenEncoderModel: {e_dispatch}", flush=True)
 
         modular_flux3 = False
         if engine == "nunchaku":
@@ -1207,6 +1331,17 @@ def _run_extras_job_cli(job_json_path: str) -> int:
 
             tr_arg = str(tr_path) if tr_path.is_file() else f"{repo_id}/{tr_path.name}"
             transformer = TrCls.from_pretrained(tr_arg, torch_dtype=torch.bfloat16)
+
+            if te_obj is not None and ("flux2" in family or "klein" in family) and not is_flux3:
+                te_hidden = getattr(getattr(te_obj, "config", None), "hidden_size", None)
+                tr_joint_dim = getattr(getattr(transformer, "config", None), "joint_attention_dim", None)
+                if isinstance(te_hidden, int) and isinstance(tr_joint_dim, int) and te_hidden * 3 != tr_joint_dim:
+                    raise RuntimeError(
+                        f"Text encoder hidden_size={te_hidden} (3x={te_hidden * 3}) does not match "
+                        f"transformer joint_attention_dim={tr_joint_dim}. "
+                        "FLUX.2 Klein 9B requires the Qwen3-8B text encoder (tonera/Qwen3-text-Nunchaku), "
+                        "while FLUX.2 Klein 4B requires Qwen3-4B (tonera/Qwen3-4B-text-Nunchaku)."
+                    )
 
             # Native vitoom-nunchaku LoRA injection (SVDQLoRAMixin)
             if lora_paths:
