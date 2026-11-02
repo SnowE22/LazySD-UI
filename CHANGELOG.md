@@ -3,14 +3,55 @@
 Журнал коммитов для людей и ИИ-агентов. Перед началом работы сверяйся с
 `git log --oneline -20`, потому что этот файл обновляется не автоматически.
 
-> **Последний код-коммит:** `07d074a` — feat(inpaint): add auto, parameterized and manual crop modes (2026-11-01).
+> **Последний код-коммит:** `4e501f5` — feat(hub): LazySD-Models cloud catalog integration and 1-click installer (2026-11-02).
 > Документация (этот файл и ссылки в MD) идёт отдельным коммитом `docs: ...`, его хеш смотри в `git log -1`.
 
 ---
 
 ## 2026-11-02
 
-### `HEAD` — feat(share): add Gradio Live tunnel provider (Hugging Face) without 100s timeout
+### `4e501f5` — feat(hub): LazySD-Models cloud catalog integration and 1-click installer
+
+- **Интеграция с официальным облачным каталогом [LazySD-Models](https://github.com/nnmgrp/LazySD-Models)**: создан модуль `backend/hub.py`, загружающий единый индекс моделей `index.json` через GitHub CDN с локальным кэшированием (10 минут).
+- **Сверка статуса с локальной копией**: каталог сопоставляет карточки с установленными локально манифестами (`backend/registry/models/`) и помечает статус `installed: true/false`.
+- **Установка карточки в 1 клик**: эндпоинт `POST /api/hub/install` скачивает выбранный JSON, проверяет безопасность имени файла (защита от path-traversal атак), сохраняет в реестр и вызывает `reload_registry()`. Модель мгновенно появляется в списке моделей без перезапуска сервера.
+- **Интерфейс каталога в WebUI**:
+  - В модальном окне выбора моделей (Model Hub) добавлена кнопка **«🌐 Каталог LazySD-Models»**.
+  - Модальное окно `hub-catalog-modal` с живым поиском и быстрыми фильтрами по архитектурам (`Flux.2 Klein 9B`, `Flux.2 Klein 4B`, `FLUX.3`, `Qwen 2.1`, `Z-Image`, `SDXL`) и движкам (`Nunchaku`, `OrbitQuant`, `SD.CPP/GGUF`, `SDNQ`).
+  - Карточки с бейджами VRAM, описанием, кнопкой «✅ Установлена» или «📥 Установить карточку» и кнопкой принудительного обновления каталога.
+- **Настройка URL источника**: в `backend/settings.py` добавлено поле `model_hub_url`, позволяющее подключать кастомные репозитории и зеркала каталога.
+
+---
+
+### `5b22513` — feat(lora): strict target_architecture compatibility guardrails across engines
+
+- **Единая базовая геометрия весов (`target_architecture`)**: в `ModelSpec` и метаданные LoRA добавлено поле `target_architecture`, выводящее точную архитектуру весов модели независимо от движка (`flux_2_klein_9b`, `flux_2_klein_4b`, `flux_3_image_klein`, `qwen_image_2_1`, `z_image_turbo`, `sdxl`, `flux_1`).
+- **Кросс-движковая совместимость LoRA**: LoRA, обученная для `flux_2_klein_9b`, получает бейдж `100% архитектура` и полностью переносима между всеми движками, реализующими эту архитектуру (Nunchaku SVDQ, OrbitQuant, SD.CPP / GGUF, SDNQ).
+- **Защитный барьер от сбоев**: если LoRA для 9B попытаться применить к 4B, FLUX.3 или Qwen, метод `check_lora_compatibility()` блокирует запуск с понятным объяснением ошибки (`compatible: false`), предотвращая падение CUDA-ядер во время инференса.
+- **Интерфейс привязки LoRA**: в модальном окне редактирования LoRA выпадающий список архитектур расширен точными вариантами с индикатором молнии `⚡`.
+
+---
+
+### `b782a7d` — docs: add system requirements and quick start guide with Python PATH instructions
+
+- **Системные требования в README**: добавлено подробное руководство по требованиям к ОС (Windows 10/11 x64), GPU (NVIDIA от 6 ГБ VRAM, драйвер 550+) и версии Python.
+- **Предотвращение ошибок PATH**: выделено важное предупреждение о необходимости включения галочки «Add python.exe to PATH» при установке Python 3.11/3.12 с python.org.
+- **Разъяснение по CUDA**: указано, что отдельная ручная установка тяжелого пакета NVIDIA CUDA Toolkit пользователям не требуется.
+
+---
+
+### `a02f259` — feat(share): add Gradio Live tunnel provider without 100s timeout and provider selector in UI
+
+- **Поддержка туннеля Gradio Live (`*.gradio.live`)**: в модуль удаленного доступа `backend/share.py` добавлен провайдер `GradioProvider`. Он подключается к инфраструктуре Hugging Face FRP (`api.gradio.app:7000`) и выдает бесплатную публичную ссылку без 100-секундного таймаута Cloudflare Gateway 524.
+- **Выбор провайдера в интерфейсе**: в панели «Деление сайтом / Удаленный доступ» добавлен выпадающий переключатель провайдера (`Cloudflare Quick Tunnel` / `Gradio Live`). Выбор сохраняется в настройках пользователя.
+- **Автономный fallback**: если библиотека `gradio` не установлена, провайдер автоматически скачивает легковесный официальный бинарник `frpc` от Hugging Face в папку `bin/`.
+
+---
+
+### `880b058` — fix(cuda): dynamically inject detected CUDA search paths into sd_cpp and extras environments
+
+- **Автопоиск системных CUDA DLL**: сканирование путей `PATH`, `CUDA_PATH` и реестра на наличие `nvrtc64_*.dll`, `cudart64_*.dll`, `cublas64_*.dll`.
+- **Динамическая инъекция в рантайм**: добавление найденных путей в системный `os.add_dll_directory` и `PATH` дочерних процессов `sd_cpp` и `extras`, обеспечивающее прозрачную работу с системными драйверами NVIDIA без ручной переустановки библиотек.
 
 - **Поддержка туннеля Gradio Live (`*.gradio.live`)**: в модуль удаленного доступа `backend/share.py` добавлен провайдер `GradioProvider`. Он подключается к инфраструктуре Hugging Face FRP (`api.gradio.app:7000`) и выдает бесплатную публичную ссылку без 100-секундного таймаута Cloudflare Gateway 524.
 - **Выбор провайдера в интерфейсе**: в панели «Деление сайтом / Удаленный доступ» добавлен выпадающий переключатель провайдера (`Cloudflare Quick Tunnel` / `Gradio Live`). Выбор сохраняется в настройках пользователя.
