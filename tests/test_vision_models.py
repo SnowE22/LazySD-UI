@@ -9,6 +9,11 @@ from backend.vision_models import (
     is_tag_matching,
     set_download_state,
 )
+from backend.vision_runtime import (
+    check_ollama_status,
+    pick_vision_tag,
+    tag_supports_vision,
+)
 
 
 def test_catalog_contains_required_vision_models():
@@ -50,6 +55,29 @@ def test_tag_matching_and_status_building():
     assert by_id["qwen2.5vl:3b"]["status"] == "installed"
     assert by_id["qwen2.5vl:7b"]["installed"] is False
     assert by_id["qwen2.5vl:7b"]["status"] == "not_installed"
+
+
+def test_text_only_models_are_not_treated_as_vision(monkeypatch):
+    assert not tag_supports_vision("qwen2.5-coder-7b:latest")
+    assert tag_supports_vision("gemma3:4b")
+    assert tag_supports_vision("qwen2.5vl:3b")
+    assert tag_supports_vision("custom-model", capabilities=["completion", "vision"])
+    assert not tag_supports_vision("custom-model", capabilities=["completion", "tools"])
+
+    def fake_http_json(url, *, method="GET", payload=None, timeout=5.0):
+        if url.endswith("/api/tags"):
+            return {
+                "models": [
+                    {"name": "qwen2.5-coder-7b:latest", "capabilities": ["tools", "completion"]},
+                    {"name": "gemma3:4b", "capabilities": ["vision", "completion"]},
+                ]
+            }
+        return {"version": "0.11.0"}
+
+    monkeypatch.setattr("backend.vision_runtime._http_json", fake_http_json)
+    status = check_ollama_status("http://127.0.0.1:11434")
+    assert status["vision_tags"] == ["gemma3:4b"]
+    assert pick_vision_tag(status["installed_tags"], status["vision_tags"]) == "gemma3:4b"
 
 
 def test_download_state_transitions():

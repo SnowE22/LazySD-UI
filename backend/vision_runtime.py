@@ -35,6 +35,7 @@ from .vision_models import (
     get_catalog_entry,
     get_download_state,
     is_local_vision_model_installed,
+    is_tag_matching,
     set_download_state,
 )
 
@@ -231,23 +232,73 @@ def _http_json(
         raise VisionRuntimeError(f"Ollama error: {exc}", status_code=503) from exc
 
 
+_VISION_TAG_HINTS = (
+    "vl",
+    "vision",
+    "llava",
+    "minicpm-v",
+    "gemma3",
+    "moondream",
+    "pixtral",
+)
+
+
+def tag_supports_vision(tag: str, capabilities: Optional[List[str]] = None) -> bool:
+    """Return True only for multimodal/VLM tags.
+
+    Ollama reports a ``capabilities`` array on ``/api/tags`` in recent versions.
+    Older versions omit it, so fall back to the local catalog and well-known
+    vision-model name hints.  Text-only models such as ``qwen2.5-coder`` must
+    never be selected as a VLM.
+    """
+    name = (tag or "").strip()
+    if not name:
+        return False
+    if capabilities is not None:
+        caps = [str(c).strip().lower() for c in capabilities]
+        return "vision" in caps
+
+    lower = name.lower()
+    if "coder" in lower:
+        return False
+    entry = get_catalog_entry(name)
+    if entry and "vision" in [str(c).lower() for c in (entry.get("capabilities") or [])]:
+        return True
+    return any(hint in lower for hint in _VISION_TAG_HINTS)
+
+
+def pick_vision_tag(installed_tags: List[str], vision_tags: Optional[List[str]] = None) -> Optional[str]:
+    """Choose the first installed tag that is actually a VLM."""
+    candidates = list(vision_tags or [])
+    if not candidates:
+        candidates = [tag for tag in (installed_tags or []) if tag_supports_vision(tag)]
+    return candidates[0] if candidates else None
+
+
 def check_ollama_status(ollama_url: str, timeout: float = 2.5) -> Dict[str, Any]:
     """Query Ollama ``/api/tags`` (and ``/api/version``) to check availability."""
     base = validate_ollama_url(ollama_url)
     tags: List[str] = []
+    vision_tags: List[str] = []
     version: Optional[str] = None
     try:
         tags_resp = _http_json(f"{base}/api/tags", method="GET", timeout=timeout)
         models = tags_resp.get("models") or []
         for m in models:
             name = m.get("name") or m.get("model")
-            if isinstance(name, str) and name.strip():
-                tags.append(name.strip())
+            if not (isinstance(name, str) and name.strip()):
+                continue
+            clean_name = name.strip()
+            tags.append(clean_name)
+            caps = m.get("capabilities")
+            if tag_supports_vision(clean_name, caps if isinstance(caps, list) else None):
+                vision_tags.append(clean_name)
     except VisionRuntimeError:
         return {
             "ollama_available": False,
             "ollama_version": None,
             "installed_tags": [],
+            "vision_tags": [],
         }
 
     try:
@@ -260,6 +311,7 @@ def check_ollama_status(ollama_url: str, timeout: float = 2.5) -> Dict[str, Any]
         "ollama_available": True,
         "ollama_version": version,
         "installed_tags": tags,
+        "vision_tags": vision_tags,
     }
 
 
@@ -660,19 +712,22 @@ def upsample_flux3_prompt(
             "model": "flux3-pup-nunchaku",
         }
 
-    # 2. Try Ollama with the requested model or any installed PUP/vision model
+    # 2. Try Ollama with the requested model or any installed vision model.
+    # Never fall back to a text-only model (e.g. qwen2.5-coder).
     st = check_ollama_status(ollama_url)
-    if st["ollama_available"] and st["installed_tags"]:
+    installed_tags = st.get("installed_tags") or []
+    vision_tags = st.get("vision_tags")
+    if vision_tags is None:
+        vision_tags = [tag for tag in installed_tags if tag_supports_vision(tag)]
+    if st["ollama_available"] and vision_tags:
         chosen_tag = None
-        if model_id and any(t.lower() == model_id.lower() for t in st["installed_tags"]):
-            chosen_tag = model_id
+        if model_id and is_tag_matching(model_id, vision_tags):
+            chosen_tag = next(
+                (tag for tag in vision_tags if is_tag_matching(model_id, [tag])),
+                vision_tags[0],
+            )
         else:
-            for tag in st["installed_tags"]:
-                if "flux-3-image-klein-pup" in tag.lower() or "qwen" in tag.lower() or "llava" in tag.lower() or "minicpm" in tag.lower():
-                    chosen_tag = tag
-                    break
-            if not chosen_tag:
-                chosen_tag = st["installed_tags"][0]
+            chosen_tag = vision_tags[0]
 
         if chosen_tag:
             base = validate_ollama_url(ollama_url)

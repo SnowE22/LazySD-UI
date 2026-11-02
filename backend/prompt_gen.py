@@ -41,6 +41,8 @@ from .vision_runtime import (
     VisionTimeoutError,
     check_ollama_status,
     generate_vlm_prompt,
+    pick_vision_tag,
+    tag_supports_vision,
 )
 
 logger = logging.getLogger("quantfunc.prompt_gen")
@@ -375,6 +377,11 @@ def generate_inpaint_prompt(
                 warnings.append(f"Model '{selected_model}' is not downloaded yet; used local heuristic fallback.")
         else:
             status_info = check_ollama_status(ollama_url)
+            installed_tags = status_info.get("installed_tags") or []
+            vision_tags = status_info.get("vision_tags")
+            if vision_tags is None:
+                # Older Ollama versions do not expose capabilities on /api/tags.
+                vision_tags = [tag for tag in installed_tags if tag_supports_vision(tag)]
             if not status_info["ollama_available"]:
                 if not fallback_enabled:
                     raise VisionRuntimeError(
@@ -382,19 +389,34 @@ def generate_inpaint_prompt(
                         status_code=503,
                     )
                 warnings.append("Ollama is not running; used local heuristic fallback.")
-            elif is_tag_matching(selected_model, status_info["installed_tags"]):
+            elif is_tag_matching(selected_model, vision_tags):
                 can_run_vlm = True
-            elif cat_entry and is_local_vision_model_installed(cat_entry, models_dir=models_dir) and status_info["installed_tags"]:
-                # Local GGUF is downloaded in cache and Ollama is running — use best available Ollama VLM tag
-                fallback_tag = next(
-                    (t for t in status_info["installed_tags"] if any(k in t.lower() for k in ("qwen", "flux-3", "minicpm", "llava"))),
-                    status_info["installed_tags"][0],
-                )
-                warnings.append(
-                    f"Local GGUF '{selected_model}' is in HF cache; executed via active Ollama VLM '{fallback_tag}'."
-                )
-                selected_model = fallback_tag
-                can_run_vlm = True
+            elif cat_entry and is_local_vision_model_installed(cat_entry, models_dir=models_dir):
+                # The GGUF is downloaded into the HF cache, but Ollama cannot
+                # execute arbitrary cache files.  Only reuse an installed model
+                # if it is actually multimodal; never fall back to a text-only
+                # model such as qwen2.5-coder.
+                fallback_tag = pick_vision_tag(installed_tags, vision_tags)
+                if fallback_tag:
+                    warnings.append(
+                        f"Local GGUF '{selected_model}' is in HF cache; "
+                        f"using installed vision model '{fallback_tag}'."
+                    )
+                    selected_model = fallback_tag
+                    can_run_vlm = True
+                else:
+                    if not fallback_enabled:
+                        raise VisionRuntimeError(
+                            f"Local GGUF '{selected_model}' is downloaded but is not "
+                            "available in Ollama, and no vision-capable Ollama model is installed. "
+                            f"Install it with Ollama provider in Hub or run `ollama pull {selected_model}`.",
+                            status_code=409,
+                        )
+                    warnings.append(
+                        f"Local GGUF '{selected_model}' is in HF cache but no "
+                        "vision-capable Ollama model is installed; used local heuristic fallback. "
+                        f"Install it with Ollama provider in Hub or run `ollama pull {selected_model}`."
+                    )
             else:
                 if not fallback_enabled:
                     raise VisionRuntimeError(

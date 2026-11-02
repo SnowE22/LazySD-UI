@@ -118,6 +118,37 @@ def test_prompt_gen_api_with_mock_vlm():
         sample_path.unlink(missing_ok=True)
 
 
+def test_prompt_gen_never_runs_text_only_ollama_model():
+    clear_prompt_cache()
+    src_rel, sample_path = _ensure_sample_source()
+    try:
+        application = app_module.create_app()
+        client = TestClient(application)
+
+        import backend.prompt_gen as pg
+        with patch.object(pg, "check_ollama_status", return_value={
+            "ollama_available": True,
+            "ollama_version": "0.5.7",
+            "installed_tags": ["qwen2.5-coder-7b:latest"],
+            "vision_tags": [],
+        }), patch.object(pg, "is_local_vision_model_installed", return_value=True), \
+                patch.object(pg, "generate_vlm_prompt") as mock_vlm:
+            resp = client.post("/api/inpaint/prompt", json={
+                "source_path": src_rel,
+                "mask": _make_mask_data_url(),
+                "instruction": "убрать текст, восстановить красный фон",
+                "vision_model": "gemma3:4b",
+                "use_vlm": True,
+            })
+            assert resp.status_code == 200, resp.text
+            data = resp.json()
+            assert data["source"] == "heuristic"
+            assert any("no vision-capable" in w for w in data["warnings"])
+            mock_vlm.assert_not_called()
+    finally:
+        sample_path.unlink(missing_ok=True)
+
+
 def test_prompt_gen_api_validation_and_error_codes():
     clear_prompt_cache()
     src_rel, sample_path = _ensure_sample_source()

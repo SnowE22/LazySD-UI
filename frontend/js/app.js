@@ -14260,6 +14260,21 @@ Object.assign(App, {
     this.renderInpaintVisionModels();
   },
 
+  // A model is only usable when it is installed for the selected runtime.
+  // In particular, a HuggingFace GGUF copy in models/cache is NOT automatically
+  // visible to Ollama; it must be pulled/imported before the VLM can run it.
+  inpaintVisionModelInstalled(entry, provider = "auto") {
+    if (!entry) return false;
+    const prov = (provider || "auto").toLowerCase();
+    if (prov === "ollama") return Boolean(entry.installed_ollama);
+    if (prov === "gguf" || prov === "nunchaku") return Boolean(entry.installed_local);
+    // auto: prefer an Ollama-installed VLM; only Nunchaku runs natively local.
+    return Boolean(
+      entry.installed_ollama
+      || (entry.provider === "nunchaku" && entry.installed_local)
+    );
+  },
+
   renderInpaintVisionModels() {
     const state = this.getInpaintState();
     const select = document.getElementById("inpaint-vision-model-select");
@@ -14300,9 +14315,12 @@ Object.assign(App, {
     for (const m of models) {
       const opt = document.createElement("option");
       opt.value = m.id;
-      const mark = m.installed ? "✓" : (m.status === "downloading" ? "⏳" : "⬇");
+      const usable = this.inpaintVisionModelInstalled(m, activeProv);
+      const mark = usable ? "✓" : (m.status === "downloading" ? "⏳" : "⬇");
       opt.textContent = `${mark} ${m.name} (${m.size_gb} GB)`;
-      opt.title = m.description || m.id;
+      opt.title = usable
+        ? (m.description || m.id)
+        : `${m.description || m.id} — not available for provider '${activeProv}' yet`;
       select.appendChild(opt);
     }
 
@@ -14317,11 +14335,12 @@ Object.assign(App, {
       select.value = "heuristic";
     } else {
       const prevEntry = models.find((m) => m.id === prevValue);
-      const prevUsable = prevValue === "heuristic" || (prevEntry && prevEntry.installed);
+      const prevUsable = prevValue === "heuristic"
+        || (prevEntry && this.inpaintVisionModelInstalled(prevEntry, activeProv));
       if (prevValue && prevValue !== "heuristic" && [...select.options].some((o) => o.value === prevValue) && (prevUsable || state._visionRendered)) {
         select.value = prevValue;
       } else {
-        const installed = models.find((m) => m.installed);
+        const installed = models.find((m) => this.inpaintVisionModelInstalled(m, activeProv));
         const recommended = models.find((m) => m.recommended);
         select.value = (installed || recommended)?.id || "heuristic";
       }
@@ -14341,7 +14360,10 @@ Object.assign(App, {
     try { localStorage.setItem("lazysd_inpaint_vision_model", val); } catch (_) {}
 
     const entry = (state.visionModels || []).find((m) => m.id === val);
-    const canDownload = Boolean(entry && !entry.installed && entry.status !== "downloading" && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
+    const provSelect = document.getElementById("inpaint-vision-provider-select");
+    const activeProv = provSelect?.value || "auto";
+    const installedForProv = this.inpaintVisionModelInstalled(entry, activeProv);
+    const canDownload = Boolean(entry && !installedForProv && entry.status !== "downloading" && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
     const canDelete = Boolean(entry && entry.installed && (state.ollamaAvailable || entry.provider === "nunchaku" || entry.provider === "gguf"));
     if (dlBtn) dlBtn.style.display = canDownload ? "inline-flex" : "none";
     if (delBtn) delBtn.style.display = canDelete ? "inline-flex" : "none";
