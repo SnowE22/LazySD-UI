@@ -8494,24 +8494,66 @@ def create_app() -> FastAPI:
 
 
         try:
+
+
+
             model_id = body.get("model_id") or body.get("model")
             if not model_id:
                 raise KeyError("model_id")
+
             prompt = body.get("prompt", "")
+
             variant_id = body.get("variant_id") or body.get("variant")
+
+
+
             raw_seed = body.get("seed")
+
+
+
             seed = int(raw_seed) if raw_seed not in (None, "", "random") else None
+
+
+
             width = int(body.get("width", 1024))
+
+
+
             height = int(body.get("height", 1024))
+
+
+
             steps = int(body.get("steps", 4))
+
+
+
             backend = body.get("backend", "lighting")
+
+
+
             raw_init_path = body.get("init_image_path")
+
+
+
             init_image_strength = float(body.get("init_image_strength") or body.get("strength", 0.7))
-            raw_mask_image = body.get("mask_image")
-            mask_blur_val = int(body.get("mask_blur", 4))
-            invert_mask_flag = bool(body.get("invert_mask", False))
-            inpaint_mode = str(body.get('inpaint_mode', 'masked_only'))
-            crop_window_size = int(body.get('crop_window_size', 768))
+
+            # Fallback: if init_image_path is not given, but ref_image or init_image is passed as base64 Data URL
+            if not raw_init_path:
+                raw_ref = body.get("ref_image") or body.get("init_image")
+                if raw_ref and isinstance(raw_ref, str) and raw_ref.startswith("data:image"):
+                    try:
+                        import base64
+                        import uuid
+                        header, encoded = raw_ref.split(",", 1)
+                        img_bytes = base64.b64decode(encoded)
+                        uploads_dir = settings.output_dir / "uploads"
+                        uploads_dir.mkdir(parents=True, exist_ok=True)
+                        init_fname = f"init_{uuid.uuid4().hex}.png"
+                        init_file_path = uploads_dir / init_fname
+                        init_file_path.write_bytes(img_bytes)
+                        raw_init_path = f"uploads/{init_fname}"
+                    except Exception as e:
+                        print(f"[api_generate] Failed to decode ref_image data URL: {e}", file=sys.stderr)
 
             mask_present = "mask" in body or "mask_path" in body
             raw_mask = body.get("mask")
@@ -8683,58 +8725,6 @@ def create_app() -> FastAPI:
 
 
                 init_image_path = norm
-
-
-
-        # Fallback: if init_image_path is not given, but ref_image or init_image is passed as base64 Data URL
-        raw_ref_image = body.get("ref_image") or body.get("init_image")
-        if not init_image_path and raw_ref_image and isinstance(raw_ref_image, str) and raw_ref_image.startswith("data:image"):
-            try:
-                import base64
-                import uuid
-                from PIL import Image
-
-                header, encoded = raw_ref_image.split(",", 1)
-                img_bytes = base64.b64decode(encoded)
-                uploads_dir = settings.output_dir / "uploads"
-                uploads_dir.mkdir(parents=True, exist_ok=True)
-                init_fname = f"init_{uuid.uuid4().hex}.png"
-                init_file_path = uploads_dir / init_fname
-                init_file_path.write_bytes(img_bytes)
-                init_image_path = f"uploads/{init_fname}"
-            except Exception as e:
-                print(f"[api_generate] Failed to decode ref_image data URL: {e}", file=sys.stderr)
-
-        # Process inpainting mask if provided
-        mask_image_path = None
-        if raw_mask_image and init_image_path:
-            try:
-                import uuid
-                import numpy as np
-                from PIL import Image
-                from backend.halftone import decode_mask_to_float
-
-                full_init_path = settings.output_dir / init_image_path
-                if full_init_path.exists():
-                    with Image.open(full_init_path) as init_img:
-                        init_w, init_h = init_img.size
-
-                    mask_float = decode_mask_to_float(
-                        raw_mask_image,
-                        target_size=(init_w, init_h),
-                        invert_mask=invert_mask_flag,
-                    )
-                    if mask_float is not None:
-                        mask_uint8 = (np.clip(mask_float, 0.0, 1.0) * 255.0).astype(np.uint8)
-                        mask_pil = Image.fromarray(mask_uint8, mode="L")
-                        uploads_dir = settings.output_dir / "uploads"
-                        uploads_dir.mkdir(parents=True, exist_ok=True)
-                        mask_filename = f"mask_{uuid.uuid4().hex}.png"
-                        saved_mask_path = uploads_dir / mask_filename
-                        mask_pil.save(saved_mask_path)
-                        mask_image_path = saved_mask_path
-            except Exception as e:
-                print(f"[api_generate] Failed to decode/save inpaint mask: {e}", file=sys.stderr)
 
 
 
@@ -9234,16 +9224,6 @@ def create_app() -> FastAPI:
             mask_crop_min_size=mask_crop_min_size,
 
             mask_crop_box=mask_crop_box,
-
-
-
-            mask_image_path=mask_image_path,
-
-
-
-            mask_blur=mask_blur_val,
-            inpaint_mode=inpaint_mode,
-            crop_window_size=crop_window_size,
 
 
 
