@@ -256,7 +256,7 @@
 
             </div>
 
-            <div class="preview-image-wrap" id="preview-image-wrap" style="display: none;">
+            <div class="preview-image-wrap fit-mode" id="preview-image-wrap" style="display: none;">
 
               <img id="preview-img" alt="Generated image">
 
@@ -288,23 +288,23 @@
 
               <canvas id="gen-mask-canvas" class="mask-overlay-canvas" style="display: none;"></canvas>
 
-              <div class="preview-toolbar">
+            </div>
 
-                <button class="preview-tool-btn" id="btn-compare-toggle" title="Шторка для сравнения с предыдущим результатом или референсом" onclick="App.toggleCompare()">↔ Сравнить</button>
+            <div class="preview-toolbar" id="gen-preview-toolbar">
 
-                <button class="preview-tool-btn active" id="btn-zoom-fit" title="Fit to screen (Вписать)" onclick="zoomFit()">⤢ Fit</button>
+              <button class="preview-tool-btn" id="btn-compare-toggle" title="Шторка для сравнения с предыдущим результатом или референсом" onclick="App.toggleCompare()">↔ Сравнить</button>
 
-                <button class="preview-tool-btn" id="btn-zoom-orig" title="Original 1:1 (Масштаб 100%)" onclick="zoomOriginal()">1:1</button>
+              <button class="preview-tool-btn active" id="btn-zoom-fit" title="Fit to screen (Вписать)" onclick="zoomFit()">⤢ Fit</button>
 
-                <button class="preview-tool-btn" title="Download" onclick="downloadImage()">⬇</button>
+              <button class="preview-tool-btn" id="btn-zoom-orig" title="Original 1:1 (Масштаб 100%)" onclick="zoomOriginal()">1:1</button>
 
-                <button class="preview-tool-btn" title="Отправить в Референс / ControlNet" onclick="sendCurrentPreviewToImg2Img()">🔄</button>
+              <button class="preview-tool-btn" title="Download" onclick="downloadImage()">⬇</button>
 
-                <button class="preview-tool-btn" id="btn-open-output-dir" title="Открыть папку со скачанным / сгенерированным в проводнике Windows" data-i18n-title="preview.open_folder" onclick="openOutputDir()">📂</button>
+              <button class="preview-tool-btn" title="Отправить в Референс / ControlNet" onclick="sendCurrentPreviewToImg2Img()">🔄</button>
 
-                <button class="preview-tool-btn" id="gen-mask-toggle" title="Редактирование по маске" data-i18n-title="generate.mask.title" onclick="App.toggleGenMask()">🎭</button>
+              <button class="preview-tool-btn" id="btn-open-output-dir" title="Открыть папку со скачанным / сгенерированным в проводнике Windows" data-i18n-title="preview.open_folder" onclick="openOutputDir()">📂</button>
 
-              </div>
+              <button class="preview-tool-btn" id="gen-mask-toggle" title="Редактирование по маске" data-i18n-title="generate.mask.title" onclick="App.toggleGenMask()">🎭</button>
 
             </div>
 
@@ -5032,47 +5032,19 @@
 
     function zoomFit() {
 
-      if (window.App && typeof window.App.resetViewportZoom === "function") {
-
-        window.App.resetViewportZoom("generate");
-
-        document.getElementById("btn-zoom-fit")?.classList.add("active");
-
-        document.getElementById("btn-zoom-orig")?.classList.remove("active");
-
-        return;
-
-      }
-
       const wrap = document.getElementById("preview-image-wrap");
 
-      const img = document.getElementById("preview-img");
-
-      const area = document.querySelector(".preview-area");
-
-      if (wrap && img) {
+      if (wrap) {
 
         wrap.classList.remove("original-mode");
 
         wrap.classList.add("fit-mode");
 
-        img.style.maxWidth = "100%";
-
-        img.style.maxHeight = "100%";
-
-        img.style.width = "auto";
-
-        img.style.height = "auto";
-
-        img.style.objectFit = "contain";
-
       }
 
-      if (area) {
+      if (window.App && typeof window.App.resetViewportZoom === "function") {
 
-        area.scrollLeft = 0;
-
-        area.scrollTop = 0;
+        window.App.resetViewportZoom("generate");
 
       }
 
@@ -5084,37 +5056,37 @@
 
     function zoomOriginal() {
 
-      if (window.App && typeof window.App.setViewportZoom === "function") {
-
-        window.App.setViewportZoom("generate", 2.0, true);
-
-        document.getElementById("btn-zoom-orig")?.classList.add("active");
-
-        document.getElementById("btn-zoom-fit")?.classList.remove("active");
-
-        return;
-
-      }
-
       const wrap = document.getElementById("preview-image-wrap");
 
       const img = document.getElementById("preview-img");
 
-      if (wrap && img) {
+      if (wrap) {
 
-        wrap.classList.remove("fit-mode");
+        wrap.classList.remove("original-mode");
 
-        wrap.classList.add("original-mode");
+        wrap.classList.add("fit-mode");
 
-        img.style.maxWidth = "none";
+      }
 
-        img.style.maxHeight = "none";
+      if (window.App && typeof window.App.setViewportZoom === "function") {
 
-        img.style.width = "auto";
+        let scale = 1.0;
 
-        img.style.height = "auto";
+        if (img && img.naturalHeight && img.clientHeight) {
 
-        img.style.objectFit = "none";
+          scale = img.naturalHeight / img.clientHeight;
+
+        } else if (img && img.naturalWidth && img.clientWidth) {
+
+          scale = img.naturalWidth / img.clientWidth;
+
+        } else {
+
+          scale = 2.0;
+
+        }
+
+        window.App.setViewportZoom("generate", scale, true);
 
       }
 

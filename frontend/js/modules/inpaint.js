@@ -1217,7 +1217,7 @@ export function initInpaintMaskEvents(appRef = null) {
   };
 
   stack.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || window.spacePressed) return;
     const layer = layerFromEvent(event);
     if (!layer || layer.type !== "mask") return;
     event.preventDefault();

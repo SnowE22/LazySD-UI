@@ -1392,7 +1392,21 @@ def _run_extras_job_cli(job_json_path: str) -> int:
                 else:
                     from diffusers import DiffusionPipeline
                     pipe = DiffusionPipeline.from_pretrained(base_source, **pipe_kwargs)
-                pipe.enable_model_cpu_offload()
+                _total_vram_gb = 0.0
+                if torch.cuda.is_available():
+                    try:
+                        _total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                    except Exception:
+                        _total_vram_gb = 0.0
+                if _total_vram_gb >= 14.0:
+                    print(f"[status] GPU has {_total_vram_gb:.1f} GB VRAM (>= 14 GB); loading pipeline directly to CUDA to save RAM...", flush=True)
+                    pipe.to("cuda")
+                    try:
+                        pipe.enable_vae_tiling()
+                    except Exception:
+                        pass
+                else:
+                    pipe.enable_model_cpu_offload()
         else:
             print(f"[status] Loading OrbitQuant W4A4 pipeline from base '{base_source}'...", flush=True)
             import orbitquant  # noqa: F401
@@ -1407,7 +1421,21 @@ def _run_extras_job_cli(job_json_path: str) -> int:
             else:
                 from diffusers import DiffusionPipeline
                 pipe = DiffusionPipeline.from_pretrained(base_source, **pipe_kwargs)
-            pipe.enable_model_cpu_offload()
+            _total_vram_gb = 0.0
+            if torch.cuda.is_available():
+                try:
+                    _total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                except Exception:
+                    _total_vram_gb = 0.0
+            if _total_vram_gb >= 14.0:
+                print(f"[status] GPU has {_total_vram_gb:.1f} GB VRAM (>= 14 GB); loading pipeline directly to CUDA to save RAM...", flush=True)
+                pipe.to("cuda")
+                try:
+                    pipe.enable_vae_tiling()
+                except Exception:
+                    pass
+            else:
+                pipe.enable_model_cpu_offload()
 
         def on_step_end(pipe_inst, step_idx, timestep, callback_kwargs):
             print(f"[step {step_idx + 1}/{steps}]", flush=True)
@@ -1457,6 +1485,14 @@ def _run_extras_job_cli(job_json_path: str) -> int:
             print(f"[status] Sampling ({steps} steps)...", flush=True)
             out = pipe(**call_kwargs).images[0]
             out.save(str(output_path))
+            try:
+                del pipe
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
         return 0
     except Exception as e:
         import traceback

@@ -57,13 +57,23 @@ export function initAllViewportZoomPan(appRef = null) {
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
       spacePressed = true;
+      window.spacePressed = true;
+      document.querySelectorAll(".preview-area, .studio-canvas-area").forEach(el => el.classList.add("space-held"));
     }
   });
 
   window.addEventListener("keyup", (e) => {
     if (e.code === "Space") {
       spacePressed = false;
+      window.spacePressed = false;
+      document.querySelectorAll(".preview-area, .studio-canvas-area").forEach(el => el.classList.remove("space-held"));
     }
+  });
+
+  window.addEventListener("blur", () => {
+    spacePressed = false;
+    window.spacePressed = false;
+    document.querySelectorAll(".preview-area, .studio-canvas-area").forEach(el => el.classList.remove("space-held"));
   });
 }
 
@@ -292,14 +302,10 @@ export function getViewportPanBounds(vp) {
   const cw = baseW * vp.zoom;
   const ch = baseH * vp.zoom;
 
-  const marginX = Math.min(vw, baseW) * 0.28;
-  const marginY = Math.min(vh, baseH) * 0.28;
-  const maxPanX = vp.zoom <= 1.0
-    ? marginX * 0.5
-    : Math.max(marginX * 0.5, (cw - vw) * 0.5 + marginX);
-  const maxPanY = vp.zoom <= 1.0
-    ? marginY * 0.5
-    : Math.max(marginY * 0.5, (ch - vh) * 0.5 + marginY);
+  const marginX = Math.max(vw, cw) * 0.75;
+  const marginY = Math.max(vh, ch) * 0.75;
+  const maxPanX = Math.max(marginX * 0.5, (cw - vw) * 0.5 + marginX);
+  const maxPanY = Math.max(marginY * 0.5, (ch - vh) * 0.5 + marginY);
 
   return { vw, vh, baseW, baseH, cw, ch, maxPanX, maxPanY };
 }
