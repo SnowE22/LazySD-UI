@@ -78,22 +78,70 @@ class HuggingFaceSource(ModelSource):
         local_dir: Path,
         revision: str = "main",
         progress_callback: Optional[ProgressCallback] = None,
+        job_id: Optional[str] = None,
     ) -> Path:
+        from pathlib import Path
+        local_path = Path(local_dir) / file_path
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        if local_path.is_file():
+            return local_path
+
+        # Use MultiPartDownloader with pause/resume and auto-retry
+        try:
+            from backend.downloader import get_download_manager, DownloadStatus
+
+            direct_url = f"https://huggingface.co/{repo_id}/resolve/{revision}/{file_path}"
+            headers = {}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+
+            task_id = job_id or f"hf_{repo_id.replace('/', '_')}_{Path(file_path).name}"
+
+            def _forward_progress(p: dict):
+                if progress_callback:
+                    progress_callback(
+                        int(p.get("downloaded_bytes") or 0),
+                        int(p.get("total_bytes") or 0),
+                        float(p.get("speed_bps") or 0.0),
+                    )
+
+            mgr = get_download_manager()
+            dl = mgr.submit(
+                task_id=task_id,
+                url=direct_url,
+                destination=local_path,
+                headers=headers,
+                num_connections=4,
+                progress_callback=_forward_progress,
+                metadata={"repo_id": repo_id, "file_path": file_path, "source": "huggingface"},
+            )
+
+            if dl._main_thread:
+                dl._main_thread.join()
+
+            if dl.status == DownloadStatus.COMPLETE and local_path.is_file():
+                return local_path
+            if dl.status == DownloadStatus.CANCELLED:
+                raise RuntimeError(f"Download cancelled by user: {file_path}")
+            if dl.status == DownloadStatus.PAUSED:
+                return local_path
+            if dl.status == DownloadStatus.ERROR and dl.error_message:
+                print(f"[hf] MultiPartDownloader error: {dl.error_message}. Falling back to hf_hub_download...")
+        except Exception as exc:
+            if "cancelled by user" in str(exc):
+                raise
+            print(f"[hf] MultiPartDownloader fallback due to: {exc}")
+
+        # Fallback to standard huggingface_hub
         from huggingface_hub import hf_hub_download
-
-        # Ensure target directory exists
-        Path(local_dir).mkdir(parents=True, exist_ok=True)
-
-        # hf_hub_download has built-in tqdm progress; for our callback we'd need
-        # to wrap it. For Phase 2 — rely on default tqdm; callback integration is Phase 4.
-        local_path = hf_hub_download(
+        downloaded = hf_hub_download(
             repo_id=repo_id,
             filename=file_path,
             revision=revision,
             local_dir=str(local_dir),
             token=self.token,
         )
-        return Path(local_path)
+        return Path(downloaded)
 
     def download_snapshot(
         self,

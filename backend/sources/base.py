@@ -74,10 +74,11 @@ class ModelSource(ABC):
         local_dir: Path,
         revision: str = "main",
         progress_callback: Optional[ProgressCallback] = None,
+        job_id: Optional[str] = None,
     ) -> Path:
         """Download a single file. Returns the local path.
 
-        Resume is handled natively by the SDK.
+        Supports multi-connection chunked downloading with resume and pause.
         """
         ...
 
