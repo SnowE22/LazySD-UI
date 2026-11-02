@@ -978,14 +978,16 @@ class SDCppWorker:
         # 4. Environment PATH
         env = os.environ.copy()
         sd_cpp_dir = get_sd_cpp_dir()
+        from .engine import get_cuda_search_paths
+        cuda_paths = get_cuda_search_paths()
         cuda_dirs = [
-            r"G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin",
-            r"G:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\bin\x64",
-            str(settings.engine_dir),
             str(sd_cpp_dir),
-        ]
-        valid_cuda = [d for d in cuda_dirs if os.path.exists(d)]
-        env["PATH"] = ";".join(valid_cuda + [env.get("PATH", "")])
+            str(settings.engine_dir),
+        ] + [str(p) for p in cuda_paths if p.exists()]
+        existing_path = env.get("PATH", "")
+        if existing_path:
+            cuda_dirs.append(existing_path)
+        env["PATH"] = os.pathsep.join(cuda_dirs)
         if settings.huggingface_token:
             env["HF_TOKEN"] = settings.huggingface_token
             env["HUGGING_FACE_HUB_TOKEN"] = settings.huggingface_token
