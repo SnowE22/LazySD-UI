@@ -10,7 +10,7 @@
 
   <title>LazySD UI</title>
 
-  <link rel="stylesheet" href="/css/styles.css?v=20261030_02">
+  <link rel="stylesheet" href="/css/styles.css?v=20261102_01">
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%237C3AED'/%3E%3Ctext x='12' y='17' text-anchor='middle' fill='white' font-size='14' font-weight='bold' font-family='Arial'%3EL%3C/text%3E%3C/svg%3E">
 
@@ -1457,6 +1457,34 @@
                 <option value="unipc">unipc</option>
 
               </select>
+
+            </div>
+
+            <div class="inpaint-model-options">
+
+              <label class="inpaint-field" for="inpaint-variant-select" data-i18n="controls.variant_backend">Quantization / Backend</label>
+
+              <select id="inpaint-variant-select" title="Quantization" onchange="App.onInpaintVariantChange()"></select>
+
+              <div class="inpaint-te-block" id="inpaint-text-encoder-block" style="display: none;">
+
+                <label class="inpaint-field" for="inpaint-text-encoder-select" data-i18n="controls.text_encoder">Text Encoder</label>
+
+                <select id="inpaint-text-encoder-select" title="Text Encoder" onchange="App.onInpaintTextEncoderChange()"></select>
+
+                <input type="text" id="inpaint-custom-text-encoder-input" class="inpaint-custom-path" placeholder="e.g. D:/ComfyUI/models/text_encoders/qwen3vl_8b_bf16.safetensors" style="display: none;">
+
+              </div>
+
+              <div class="inpaint-te-block" id="inpaint-vae-block" style="display: none;">
+
+                <label class="inpaint-field" for="inpaint-vae-select" data-i18n="controls.vae">VAE / Decoder</label>
+
+                <select id="inpaint-vae-select" title="VAE" onchange="App.onInpaintVaeChange()"></select>
+
+                <input type="text" id="inpaint-custom-vae-input" class="inpaint-custom-path" placeholder="e.g. D:/ComfyUI/models/vae/texture_fix_vae.safetensors" style="display: none;">
+
+              </div>
 
             </div>
 
@@ -4573,7 +4601,7 @@
 
   <script src="/js/dropzone.js?v=20261022_01"></script>
 
-  <script src="/js/app.js?v=20261030_07"></script>
+  <script src="/js/app.js?v=20261102_01"></script>
 
   <script>
 

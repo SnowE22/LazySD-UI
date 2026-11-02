@@ -2366,6 +2366,8 @@ def create_app() -> FastAPI:
 
                 "default_cfg": default_cfg,
 
+                "scheduler_presets": m.scheduler_presets,
+
 
 
                 "hidden_for_guests": hidden_for_guests,
@@ -3519,6 +3521,8 @@ def create_app() -> FastAPI:
 
 
                 "default_cfg": default_cfg,
+
+                "scheduler_presets": m.scheduler_presets,
 
 
 
@@ -8910,10 +8914,9 @@ def create_app() -> FastAPI:
 
 
 
-
         # Find the selected transformer
 
-
+        cache = CacheManager()
 
         # `backend` (lighting/svdq) is a QuantFunc-engine concept. Nunchaku,
         # OrbitQuant, SD.CPP and SDNQ cards expose the ENGINE name as the
