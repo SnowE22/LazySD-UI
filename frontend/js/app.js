@@ -6522,10 +6522,18 @@ const App = {
     if (tokenInput && status.token) tokenInput.value = status.token;
     if (autoCheck) autoCheck.checked = !!status.auto_start;
 
+    const providerSelect = document.getElementById("setting-share-provider");
+    const activeProvider = status.tunnel?.provider || status.share_tunnel_provider || "cloudflared";
+    if (providerSelect) {
+      providerSelect.value = activeProvider;
+      providerSelect.disabled = !!status.running;
+    }
+
     if (status.running && status.public_url) {
       if (badge) {
         badge.className = "state-badge installed";
-        badge.textContent = `✓ Активен (${status.provider})`;
+        const provLabel = status.tunnel?.provider_label || (activeProvider === "gradio" ? "Gradio Live" : "Cloudflare");
+        badge.textContent = `✓ Активен (${provLabel})`;
       }
       if (urlWrap) urlWrap.style.display = "block";
       if (urlInput) urlInput.value = status.share_url || status.public_url;
@@ -6537,14 +6545,31 @@ const App = {
         badge.textContent = t("settings.share.status_stopped");
       }
       if (urlWrap) urlWrap.style.display = "none";
-      if (toggleBtn) toggleBtn.textContent = t("settings.share.start");
+      if (toggleBtn) {
+        const provLabel = activeProvider === "gradio" ? "Gradio Live" : "Cloudflare";
+        toggleBtn.textContent = `Запустить ${provLabel}`;
+      }
       if (copyBtn) copyBtn.style.display = "none";
+    }
+  },
+
+  async onShareProviderChange(provider) {
+    try {
+      await this.apiPost("/api/share/options", { share_tunnel_provider: provider });
+      const provName = provider === "gradio" ? "Gradio Live" : "Cloudflare";
+      this.toast("info", `Выбран провайдер туннеля: ${provName}`);
+      await this.loadShareStatus();
+    } catch (e) {
+      this.toast("error", e.message);
     }
   },
 
   async toggleShareTunnel() {
     const isRunning = this.state.shareStatus?.running;
     const btn = document.getElementById("btn-share-toggle");
+    const providerSelect = document.getElementById("setting-share-provider");
+    const provider = providerSelect ? providerSelect.value : (this.state.shareStatus?.tunnel?.provider || "cloudflared");
+    const provName = provider === "gradio" ? "Gradio Live" : "Cloudflare";
     try {
       if (isRunning) {
         if (btn) btn.textContent = "Остановка...";
@@ -6553,9 +6578,9 @@ const App = {
         this.toast("info", t("settings.share.stopped"));
         await this.loadShareStatus();
       } else {
-        if (btn) btn.textContent = "Запуск Cloudflare...";
-        this.toast("info", t("settings.share.starting"));
-        await this.apiPost("/api/share/start", { provider: "cloudflared" });
+        if (btn) btn.textContent = `Запуск ${provName}...`;
+        this.toast("info", `Запуск туннеля ${provName}...`);
+        await this.apiPost("/api/share/start", { provider });
 
         // Poll for public trycloudflare URL (takes ~1-3s to establish)
         for (let i = 0; i < 8; i++) {

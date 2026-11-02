@@ -2864,6 +2864,13 @@
 
             <div class="setting-value">
 
+              <div style="margin-bottom: 6px;">
+                <select id="setting-share-provider" class="setting-select" onchange="App.onShareProviderChange(this.value)" style="padding: 4px 8px; font-size: 12px; border-radius: 6px; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-main); outline: none;">
+                  <option value="cloudflared">⚡ Cloudflare Quick Tunnel (Быстрый, таймаут 100с)</option>
+                  <option value="gradio">🐢 Gradio Live (Hugging Face, без таймаута)</option>
+                </select>
+              </div>
+
               <div id="setting-share-status-badge" class="state-badge missing" style="display: inline-block;" data-i18n="settings.share.status_stopped">Остановлен</div>
 
               <div id="setting-share-url-wrap" style="display: none; margin-top: 8px;">

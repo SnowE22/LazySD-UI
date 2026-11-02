@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-11-02
+
+### `HEAD` — feat(share): add Gradio Live tunnel provider (Hugging Face) without 100s timeout
+
+- **Поддержка туннеля Gradio Live (`*.gradio.live`)**: в модуль удаленного доступа `backend/share.py` добавлен провайдер `GradioProvider`. Он подключается к инфраструктуре Hugging Face FRP (`api.gradio.app:7000`) и выдает бесплатную публичную ссылку без 100-секундного таймаута Cloudflare Gateway 524.
+- **Выбор провайдера в интерфейсе**: в панели «Деление сайтом / Удаленный доступ» добавлен выпадающий переключатель провайдера (`Cloudflare Quick Tunnel` / `Gradio Live`). Выбор сохраняется в настройках пользователя.
+- **Автономный fallback**: если библиотека `gradio` не установлена, провайдер автоматически скачивает легковесный официальный бинарник `frpc` от Hugging Face в папку `bin/`.
+
+---
+
 ## 2026-11-01
 
 ### `HEAD` — feat(server): dynamic port selection, auto-fallback when busy, CLI --port forwarding in start.bat
