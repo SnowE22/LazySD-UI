@@ -8463,6 +8463,7 @@ def create_app() -> FastAPI:
 
 
         shared = bool(body.get("shared", default_shared))
+        settings = get_settings()
 
 
 
@@ -8496,15 +8497,13 @@ def create_app() -> FastAPI:
 
 
 
-            model_id = body["model_id"]
+            model_id = body.get("model_id") or body.get("model")
+            if not model_id:
+                raise KeyError("model_id")
 
+            prompt = body.get("prompt", "")
 
-
-            prompt = body["prompt"]
-
-
-
-            variant_id = body.get("variant_id")
+            variant_id = body.get("variant_id") or body.get("variant")
 
 
 
@@ -8536,7 +8535,25 @@ def create_app() -> FastAPI:
 
 
 
-            init_image_strength = float(body.get("init_image_strength", 0.7))
+            init_image_strength = float(body.get("init_image_strength") or body.get("strength", 0.7))
+
+            # Fallback: if init_image_path is not given, but ref_image or init_image is passed as base64 Data URL
+            if not raw_init_path:
+                raw_ref = body.get("ref_image") or body.get("init_image")
+                if raw_ref and isinstance(raw_ref, str) and raw_ref.startswith("data:image"):
+                    try:
+                        import base64
+                        import uuid
+                        header, encoded = raw_ref.split(",", 1)
+                        img_bytes = base64.b64decode(encoded)
+                        uploads_dir = settings.output_dir / "uploads"
+                        uploads_dir.mkdir(parents=True, exist_ok=True)
+                        init_fname = f"init_{uuid.uuid4().hex}.png"
+                        init_file_path = uploads_dir / init_fname
+                        init_file_path.write_bytes(img_bytes)
+                        raw_init_path = f"uploads/{init_fname}"
+                    except Exception as e:
+                        print(f"[api_generate] Failed to decode ref_image data URL: {e}", file=sys.stderr)
 
             mask_present = "mask" in body or "mask_path" in body
             raw_mask = body.get("mask")
