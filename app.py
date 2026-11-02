@@ -2264,6 +2264,7 @@ def create_app() -> FastAPI:
 
 
                 "family": m.family,
+                "target_architecture": m.get_target_architecture() if hasattr(m, "get_target_architecture") else getattr(m, "target_architecture", m.family),
 
 
 
@@ -3417,6 +3418,7 @@ def create_app() -> FastAPI:
 
 
                 "family": m.family,
+                "target_architecture": m.get_target_architecture() if hasattr(m, "get_target_architecture") else getattr(m, "target_architecture", m.family),
 
 
 
@@ -7362,6 +7364,7 @@ def create_app() -> FastAPI:
 
 
                     "family": m.family,
+                    "target_architecture": m.get_target_architecture() if hasattr(m, "get_target_architecture") else getattr(m, "target_architecture", m.family),
 
 
 
