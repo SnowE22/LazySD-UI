@@ -265,6 +265,8 @@ def check_ollama_status(ollama_url: str, timeout: float = 2.5) -> Dict[str, Any]
 
 def _sanitize_positive_prompt(prompt_raw: str) -> str:
     p = (prompt_raw or "").strip()
+    # Strip any CJK (Japanese/Chinese/Korean) characters so the diffusion model never renders text
+    p = re.sub(r'["\'«„“”\(\[]*[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef]+["\'»“”\)\]]*', "", p)
     # Remove any meta-references to the red mask overlay so the diffusion model doesn't paint red shapes
     p = re.sub(
         r"\s*(?:to\s+seamlessly\s+fill|filling|inside|within|in)\s+the\s+(?:bright\s+)?(?:red[-\s]+)?(?:masked|highlighted)\s+(?:shapes|area|region|pixels|zone)s?\.?$",
@@ -274,6 +276,7 @@ def _sanitize_positive_prompt(prompt_raw: str) -> str:
     )
     p = re.sub(r"\bbright\s+red\s+(?:masked|highlighted)\s+(?:shapes|area|region|pixels)\b", "surrounding area", p, flags=re.IGNORECASE)
     p = re.sub(r"\bred\s+(?:masked|highlighted)\s+(?:shapes|area|region|pixels)\b", "surrounding area", p, flags=re.IGNORECASE)
+    p = re.sub(r"\s{2,}", " ", p)
     return p.strip().rstrip(",").strip()
 
 
@@ -329,11 +332,12 @@ def run_nunchaku_pup_inference(
     prompt_text: str,
     images_b64: Optional[List[str]] = None,
     timeout_sec: int = 120,
+    max_new_tokens: int = 180,
 ) -> str:
     """Run ``tonera/flux-3-image-klein-pup-nunchaku`` inside the ``envs/extras`` Python environment."""
-    from .extras import get_extras_python
+    from .extras import extras_python
 
-    py_exe = get_extras_python()
+    py_exe = extras_python()
     if not py_exe or not Path(py_exe).is_file():
         raise VisionRuntimeError("Nunchaku Python environment (envs/extras) is not installed", status_code=503)
 
@@ -356,6 +360,26 @@ import torch
 from PIL import Image, ImageOps
 from transformers import AutoProcessor
 from nunchaku import NunchakuQwen3_5ForConditionalGeneration
+import nunchaku.models.text_encoders.qwen3_5_pup as _q35_pup
+
+try:
+    import triton  # noqa: F401
+    _has_triton = True
+except ImportError:
+    _has_triton = False
+    # Windows envs/extras may not have Triton; use native PyTorch CUDA ops for RMSNorm & SiLU*Mul
+    def _rms_gain_forward(self, x):
+        out = self._norm(x.float()) * self.weight.float()
+        return out.type_as(x)
+    def _rms_gated_forward(self, hidden_states, gate=None):
+        return super(_q35_pup.Qwen3_5RMSNormGatedFused, self).forward(hidden_states, gate)
+    def _mlp_gate_up_forward(self, x):
+        gate_up = self.gate_up_proj(x)
+        gate, up = gate_up.chunk(2, dim=-1)
+        return self.down_proj(torch.nn.functional.silu(gate) * up)
+    _q35_pup.Qwen3_5RMSNormGain.forward = _rms_gain_forward
+    _q35_pup.Qwen3_5RMSNormGatedFused.forward = _rms_gated_forward
+    _q35_pup.Qwen3_5MLPGateUp.forward = _mlp_gate_up_forward
 
 req = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 model_dir = req["model_dir"]
@@ -367,8 +391,8 @@ max_new_tokens = int(req.get("max_new_tokens") or 512)
 sys_prompts = json.loads((Path(model_dir) / "system_prompts.json").read_text(encoding="utf-8"))
 processor = AutoProcessor.from_pretrained(model_dir)
 upsampler = NunchakuQwen3_5ForConditionalGeneration.from_pretrained(
-    quant_path, dtype=torch.bfloat16
-).eval().to("cuda")
+    quant_path, device="cuda", dtype=torch.bfloat16, decode_cuda_graph=_has_triton
+).eval()
 
 pil_images = []
 for b64_str in images_b64:
@@ -401,7 +425,7 @@ with torch.no_grad():
 prompt_tokens = int(inputs["input_ids"].shape[1])
 new_tokens = output[0, prompt_tokens:]
 caption = processor.decode(new_tokens, skip_special_tokens=True).strip()
-print("PUP_RESULT_JSON:" + json.dumps({"caption": caption}, ensure_ascii=False), flush=True)
+print("PUP_RESULT_JSON:" + json.dumps({"caption": caption}, ensure_ascii=True), flush=True)
 """
     with tempfile.TemporaryDirectory(prefix="lazysd_pup_") as tmpdir:
         req_file = Path(tmpdir) / "request.json"
@@ -412,7 +436,7 @@ print("PUP_RESULT_JSON:" + json.dumps({"caption": caption}, ensure_ascii=False),
                 "quant_path": str(quant_path),
                 "prompt": prompt_text,
                 "images_b64": images_b64 or [],
-                "max_new_tokens": 512,
+                "max_new_tokens": int(max_new_tokens or 180),
             }),
             encoding="utf-8",
         )
@@ -461,17 +485,35 @@ def generate_vlm_prompt(
     if entry and entry.get("provider") == "nunchaku":
         base_models_dir = (models_dir or (Path(__file__).resolve().parent.parent / "models" / "cache")).resolve()
         model_dir = base_models_dir / entry["local_dir"]
-        req_text = instruction.strip() if (instruction and instruction.strip()) else (
-            "Remove any unwanted text or artifacts in the highlighted region and seamlessly restore the background texture and colors."
-        )
+        instr_clean = (instruction or "").strip()
+        colors = ", ".join((analysis_hint or {}).get("dominant_colors") or [])
+        if _is_removal_instruction(instr_clean):
+            req_text = (
+                f"In the bright red-highlighted mask region: {instr_clean}. "
+                "Do NOT describe any unmasked character, face, hair, or outfit standing next to the red mask. "
+                f"Describe ONLY the clean background surface, lighting, colors ({colors or 'matching surroundings'}), "
+                "and manga/anime brush texture that should seamlessly fill the red masked area after removal (max 45 words)."
+            )
+        elif instr_clean:
+            req_text = (
+                f"In the bright red-highlighted mask region: {instr_clean}. "
+                "Focus strictly on what should appear inside the red mask, matching surrounding art style (max 45 words)."
+            )
+        else:
+            req_text = (
+                "Seamlessly restore the background texture, lighting, and colors inside the bright red-highlighted mask region, "
+                "ignoring unmasked characters outside the red mask (max 45 words)."
+            )
         caption = run_nunchaku_pup_inference(
             model_dir=model_dir,
             quant_file=entry["primary_file"],
             prompt_text=req_text,
             images_b64=[overview_b64, crop_b64],
             timeout_sec=timeout_sec,
+            max_new_tokens=140,
         )
-        return parse_vlm_response_text(caption)
+        p_out, n_out = parse_vlm_response_text(caption, instruction=instruction)
+        return _sanitize_positive_prompt(p_out), _sanitize_negative_prompt(n_out, instruction=instruction)
 
     global _LAST_ACTIVE_OLLAMA_MODEL
     base = validate_ollama_url(ollama_url)

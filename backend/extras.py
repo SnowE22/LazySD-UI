@@ -63,6 +63,9 @@ def extras_python() -> Optional[Path]:
     return p if p.is_file() else None
 
 
+get_extras_python = extras_python
+
+
 _PROBE = r"""
 import json, sys
 out = {"python": sys.version.split()[0], "py_tag": "cp%d%d" % sys.version_info[:2]}

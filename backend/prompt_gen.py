@@ -458,8 +458,10 @@ def generate_inpaint_prompt(
         "analysis": heur["analysis"],
         "cached": False,
     }
-    with _CACHE_LOCK:
-        _PROMPT_CACHE[cache_key] = dict(result)
-        while len(_PROMPT_CACHE) > MAX_CACHE_ENTRIES:
-            _PROMPT_CACHE.popitem(last=False)
+    # Only cache heuristic results when heuristic mode was explicitly requested (not on VLM error fallback)
+    if not effective_use_vlm:
+        with _CACHE_LOCK:
+            _PROMPT_CACHE[cache_key] = dict(result)
+            while len(_PROMPT_CACHE) > MAX_CACHE_ENTRIES:
+                _PROMPT_CACHE.popitem(last=False)
     return result
